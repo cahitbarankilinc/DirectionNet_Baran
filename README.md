@@ -120,10 +120,11 @@ PY:  /Users/<username>/miniforge_arm/
 You can now start training the model. Below are example commands to run the training:
 ### Train DirectionNet-R
 ```bash
-python train.py \
+python -u train.py \
   --checkpoint_dir checkpoints/R \
-  --data_dir data/MatterportA \
-  --model 9D
+  --data_dir data/MatterportA/test \
+  --model 9D \
+  --batch 2
 ```
 
 ### Evaluation DirectionNet-R
