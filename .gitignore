@@ -1,0 +1,8 @@
+data/
+
+Miniforge3-MacOSX-arm64.sh
+
+__pycache__/
+*.pyc
+.DS_Store
+.env
