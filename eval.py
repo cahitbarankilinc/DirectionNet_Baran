@@ -37,6 +37,7 @@ if not hasattr(_aops, "stack"):
 from absl import app
 from absl import flags
 import dataset_loader
+import directional_transformer
 import model
 import tensorflow.compat.v1 as tf
 import tensorflow_probability as tfp
@@ -76,6 +77,9 @@ flags.DEFINE_bool('derotate_both', True,
 flags.DEFINE_integer('testset_size', 1000, 'The size of the test set.')
 flags.DEFINE_integer(
     'eval_interval_secs', 5 * 60, 'Evaluation interval. default: 5 mins')
+flags.DEFINE_bool(
+    'enable_directional_transformer', False,
+    'Enable contextual transformer refinement of (v_x, v_y, v_z, t).')
 
 
 def streaming_median_metric(values):
@@ -109,14 +113,21 @@ def eval_direction_net_rotation(src_img,
     raise ValueError("'n_output_distributions' must be either 2 or 3.")
 
   net = model.DirectionNet(n_output_distributions)
+  transformer = None
+  if FLAGS.enable_directional_transformer and n_output_distributions == 4:
+    transformer = directional_transformer.DirectionalContextTransformer()
   directions_gt = rotation_gt[:, :n_output_distributions]
   distribution_gt = util.spherical_normalization(util.von_mises_fisher(
       directions_gt,
       tf.constant(FLAGS.kappa, tf.float32),
       [FLAGS.distribution_height, FLAGS.distribution_width]), rectify=False)
 
-  pred = net(src_img, trt_img, training=False)
-  directions, _, distribution_pred = util.distributions_to_directions(pred)
+  pred, context_embedding = net(src_img, trt_img, training=False)
+  directions, _, distribution_pred = util.distributions_to_directions(
+      pred,
+      transformer=transformer,
+      context_embedding=context_embedding,
+      training=False)
   if n_output_distributions == 3:
     rotation_estimated = util.svd_orthogonalize(directions)
   elif n_output_distributions == 2:
@@ -179,6 +190,7 @@ def eval_direction_net_translation(src_img,
     Tensorflow metrics.
   """
   net = model.DirectionNet(1)
+  transformer = None
 
   (transformed_src, transformed_trt) = util.derotation(
       src_img,
@@ -204,8 +216,12 @@ def eval_direction_net_translation(src_img,
       tf.constant(FLAGS.kappa, tf.float32),
       [FLAGS.distribution_height, FLAGS.distribution_width]), rectify=False)
 
-  pred = net(transformed_src, transformed_trt, training=False)
-  directions, _, distribution_pred = util.distributions_to_directions(pred)
+  pred, context_embedding = net(transformed_src, transformed_trt, training=False)
+  directions, _, distribution_pred = util.distributions_to_directions(
+      pred,
+      transformer=transformer,
+      context_embedding=context_embedding,
+      training=False)
 
   half_derotation = util.half_rotation(rotation_pred)
   # The output directions are relative to the derotated frame. Transform them
@@ -258,6 +274,9 @@ def eval_direction_net_single(src_img,
     Tensorflow metrics.
   """
   net = model.DirectionNet(4)
+  transformer = None
+  if FLAGS.enable_directional_transformer:
+    transformer = directional_transformer.DirectionalContextTransformer()
   translation_gt = tf.expand_dims(translation_gt, 1)
   directions_gt = tf.concat([rotation_gt, translation_gt], 1)
   distribution_gt = util.spherical_normalization(util.von_mises_fisher(
@@ -265,8 +284,12 @@ def eval_direction_net_single(src_img,
       tf.constant(FLAGS.kappa, tf.float32),
       [FLAGS.distribution_height, FLAGS.distribution_width]), rectify=False)
 
-  pred = net(src_img, trt_img, training=False)
-  directions, _, distribution_pred = util.distributions_to_directions(pred)
+  pred, context_embedding = net(src_img, trt_img, training=False)
+  directions, _, distribution_pred = util.distributions_to_directions(
+      pred,
+      transformer=transformer,
+      context_embedding=context_embedding,
+      training=False)
   rotation_estimated = util.svd_orthogonalize(
       directions[:, :3])
 

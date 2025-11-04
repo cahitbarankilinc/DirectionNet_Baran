@@ -22,6 +22,7 @@ import time
 from absl import app
 from absl import flags
 import dataset_loader
+import directional_transformer
 import losses
 import model
 import tensorflow.compat.v1 as tf
@@ -72,6 +73,9 @@ flags.DEFINE_float(
     'The field of view of input images after derotation transformation.')
 flags.DEFINE_bool('derotate_both', True,
                   'Derotate both input images when training DirectionNet-T')
+flags.DEFINE_bool(
+    'enable_directional_transformer', False,
+    'Enable contextual transformer refinement of (v_x, v_y, v_z, t).')
 
 Computation = collections.namedtuple('Computation',
                                      ['train_op', 'loss', 'global_step'])
@@ -101,6 +105,9 @@ def direction_net_rotation(src_img,
     raise ValueError("'n_output_distributions' must be either 2 or 3.")
 
   net = model.DirectionNet(n_output_distributions)
+  transformer = None
+  if FLAGS.enable_directional_transformer and n_output_distributions == 4:
+    transformer = directional_transformer.DirectionalContextTransformer()
   global_step = tf.train.get_or_create_global_step()
   directions_gt = rotation_gt[:, :n_output_distributions]
   distribution_gt = util.spherical_normalization(util.von_mises_fisher(
@@ -108,9 +115,12 @@ def direction_net_rotation(src_img,
       tf.constant(FLAGS.kappa, tf.float32),
       [FLAGS.distribution_height, FLAGS.distribution_width]), rectify=False)
 
-  pred = net(src_img, trt_img, training=True)
+  pred, context_embedding = net(src_img, trt_img, training=True)
   directions, expectation, distribution_pred = util.distributions_to_directions(
-      pred)
+      pred,
+      transformer=transformer,
+      context_embedding=context_embedding,
+      training=True)
   if n_output_distributions == 3:
     rotation_estimated = util.svd_orthogonalize(directions)
   elif n_output_distributions == 2:
@@ -181,6 +191,7 @@ def direction_net_translation(src_img,
     A collection of tensors including training ops, loss, and global step count.
   """
   net = model.DirectionNet(1)
+  transformer = None
   global_step = tf.train.get_or_create_global_step()
   perturbed_rotation = tf.cond(
       tf.less(tf.random_uniform([], 0, 1.0), 0.5),
@@ -215,9 +226,12 @@ def direction_net_translation(src_img,
       tf.constant(FLAGS.kappa, tf.float32),
       [FLAGS.distribution_height, FLAGS.distribution_width]), rectify=False)
 
-  pred = net(transformed_src, transformed_trt, training=True)
+  pred, context_embedding = net(transformed_src, transformed_trt, training=True)
   directions, expectation, distribution_pred = util.distributions_to_directions(
-      pred)
+      pred,
+      transformer=transformer,
+      context_embedding=context_embedding,
+      training=True)
 
   direction_loss = losses.direction_loss(directions, translation_gt)
   distribution_loss = tf.constant(
@@ -272,6 +286,9 @@ def direction_net_single(src_img, trt_img, rotation_gt, translation_gt):
     A collection of tensors including training ops, loss, and global step count.
   """
   net = model.DirectionNet(4)
+  transformer = None
+  if FLAGS.enable_directional_transformer:
+    transformer = directional_transformer.DirectionalContextTransformer()
   global_step = tf.train.get_or_create_global_step()
   directions_gt = tf.concat([rotation_gt, translation_gt], 1)
   distribution_gt = util.spherical_normalization(util.von_mises_fisher(
@@ -279,9 +296,12 @@ def direction_net_single(src_img, trt_img, rotation_gt, translation_gt):
       tf.constant(FLAGS.kappa, tf.float32),
       [FLAGS.distribution_height, FLAGS.distribution_width]), rectify=False)
 
-  pred = net(src_img, trt_img, training=True)
+  pred, context_embedding = net(src_img, trt_img, training=True)
   directions, expectation, distribution_pred = util.distributions_to_directions(
-      pred)
+      pred,
+      transformer=transformer,
+      context_embedding=context_embedding,
+      training=True)
   rotation_estimated = util.svd_orthogonalize(
       directions[:, :3])
 

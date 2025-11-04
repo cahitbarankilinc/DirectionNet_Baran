@@ -280,12 +280,39 @@ def half_rotation(rotation):
   return rotation_matrix_3d.from_axis_angle(axes, angles/2)
 
 
-def distributions_to_directions(x):
-  """Convert spherical distributions from the DirectionNet to directions."""
+def distributions_to_directions(x,
+                                transformer=None,
+                                context_embedding=None,
+                                training=False):
+  """Convert spherical distributions from the DirectionNet to directions.
+
+  Args:
+    x: [BATCH, HEIGHT, WIDTH, CHANNELS] spherical distributions.
+    transformer: Optional DirectionalContextTransformer instance.
+    context_embedding: Optional [BATCH, 1024] encoder embedding used when the
+      transformer is enabled.
+    training: Whether the transformer should run in training mode.
+
+  Returns:
+    A tuple of (directions, expectation, distribution_pred) where directions are
+    unit-normalized vectors potentially refined by the transformer, expectation
+    are the raw expectation vectors prior to normalization, and distribution
+    is the area-normalized spherical probability map.
+  """
   distribution_pred = spherical_normalization(x)
   expectation = spherical_expectation(distribution_pred)
   expectation_normalized = tf.nn.l2_normalize(expectation, axis=-1)
-  return expectation_normalized, expectation, distribution_pred
+
+  refined = expectation_normalized
+  if transformer is not None:
+    channels = expectation.shape.as_list()[1]
+    if channels == 4:
+      if context_embedding is None:
+        raise ValueError(
+            'context_embedding must be provided when using the transformer.')
+      refined = transformer(
+          expectation, context_embedding, training=training)
+  return refined, expectation, distribution_pred
 
 
 def derotation(src_img,

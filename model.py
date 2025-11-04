@@ -216,9 +216,13 @@ class DirectionNet(keras.Model):
       training: (bool) if the training mode is on.
 
     Returns:
-     [BATCH, 64, 64, N] N spherical distributions in 64x64 equirectangular grid.
+      A tuple with:
+        distributions: [BATCH, 64, 64, N] spherical distributions in 64x64
+          equirectangular grid.
+        embedding: [BATCH, 1024] Siamese encoder bottleneck embedding.
     """
-    y = self.encoder(img1, img2, training)
+    encoder_embedding = self.encoder(img1, img2, training)
+    y = encoder_embedding
 
     y = self._spherical_upsampling(y)
     y = self.decoder_block1(y)[:, 1:-1, 1:-1, :]
@@ -238,7 +242,10 @@ class DirectionNet(keras.Model):
     y = self._spherical_upsampling(y)
     y = self.decoder_block6(y)[:, 1:-1, 1:-1, :]
 
-    return self.down_channel(y)
+    distributions = self.down_channel(y)
+    context_embedding = tf.reshape(
+        encoder_embedding, [tf.shape(encoder_embedding)[0], -1])
+    return distributions, context_embedding
 
 
 class SiameseEncoder(keras.Model):
