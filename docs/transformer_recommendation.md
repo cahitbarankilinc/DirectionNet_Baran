@@ -24,6 +24,7 @@
 - **Initialization**: Start with pre-trained DirectionNet weights; initialize transformer weights with Xavier/Glorot.
 - **Loss coupling**: Keep existing direction, distribution, and spread losses but add a consistency term encouraging orthogonality between \(v_x, v_y, v_z\) after the transformer (e.g., sum of squared dot products) and alignment between transformed translation and epipolar geometry derived from rotation (optional).
 - **Curriculum**: Freeze the transformer for the first few epochs to stabilize training, then fine-tune end-to-end with a reduced learning rate (e.g., 1e-4 for the transformer, 5e-4 for CNN layers).
+- **Practical setup**: Use `--transformer_lr=<value>` to set the smaller refinement learning rate and, when resuming from a backbone checkpoint, pass `--freeze_backbone=True` so that only transformer parameters update during the warm-up stage.
 - **Regularization**: Apply dropout (rate 0.1) within the transformer MLP and attention to prevent overfitting to dataset-specific baselines.
 
 ## Expected Benefits
