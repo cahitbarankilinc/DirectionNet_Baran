@@ -1,0 +1,6 @@
+Epochs: 5
+Batch: 8
+Learning rate: 3e-4
+
+V2 Branch deki yeni ve katmanlanabilir transformer bu.
+transformer icin lr: 1e-4

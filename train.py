@@ -63,7 +63,7 @@ flags.DEFINE_integer(
     'The width dimension of input images after derotation transformation.')
 flags.DEFINE_float('lr', 1e-3, 'The learning rate.')
 flags.DEFINE_float(
-    'transformer_lr', 0.0,
+    'transformer_lr', 1e-4,
     'Optional learning rate override for transformer parameters when enabled.')
 flags.DEFINE_bool(
     'freeze_backbone', False,
@@ -80,7 +80,7 @@ flags.DEFINE_float(
 flags.DEFINE_bool('derotate_both', True,
                   'Derotate both input images when training DirectionNet-T')
 flags.DEFINE_bool(
-    'enable_directional_transformer', False,
+    'enable_directional_transformer', True,
     'Enable contextual transformer refinement of (v_x, v_y, v_z, t).')
 
 Computation = collections.namedtuple('Computation',
