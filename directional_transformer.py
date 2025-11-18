@@ -1,8 +1,16 @@
 # coding=utf-8
 """Directional transformer module for contextualizing DirectionNet outputs."""
 
+import math
+
 import tensorflow.compat.v1 as tf
 from tensorflow.compat.v1 import keras
+
+
+def _approximate_gelu(x):
+  """TF1-friendly GELU approximation used when keras.activations.gelu is absent."""
+  coeff = tf.cast(tf.sqrt(tf.constant(2.0 / math.pi, dtype=tf.float32)), x.dtype)
+  return 0.5 * x * (1.0 + tf.tanh(coeff * (x + 0.044715 * tf.pow(x, 3))))
 
 
 class LayerNormalization(keras.layers.Layer):
@@ -62,10 +70,9 @@ class DirectionalContextTransformer(keras.Model):
     self.attention_dropout = keras.layers.Dropout(dropout_rate)
     self.norm1 = LayerNormalization()
     self.norm2 = LayerNormalization()
-    # TF1-compat mode may not expose tf.nn.gelu; rely on the Keras activation
-    # implementation to keep the intended nonlinearity available across
-    # TensorFlow versions.
-    self.mlp_dense1 = keras.layers.Dense(mlp_dim, activation=keras.activations.gelu)
+    # TF1-compat mode may not expose tf.nn.gelu or keras.activations.gelu; use a
+    # local approximation to retain the intended nonlinearity consistently.
+    self.mlp_dense1 = keras.layers.Dense(mlp_dim, activation=_approximate_gelu)
     self.mlp_dropout1 = keras.layers.Dropout(dropout_rate)
     self.mlp_dense2 = keras.layers.Dense(hidden_size)
     self.mlp_dropout2 = keras.layers.Dropout(dropout_rate)
