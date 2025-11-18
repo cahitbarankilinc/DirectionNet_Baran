@@ -245,6 +245,7 @@ class DirectionNet(keras.Model):
     distributions = self.down_channel(y)
     context_embedding = tf.reshape(
         encoder_embedding, [tf.shape(encoder_embedding)[0], -1])
+    context_embedding.set_shape([None, encoder_embedding.shape[-1]])
     return distributions, context_embedding
 
 

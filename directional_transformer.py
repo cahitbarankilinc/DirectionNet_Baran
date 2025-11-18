@@ -62,7 +62,10 @@ class DirectionalContextTransformer(keras.Model):
     self.attention_dropout = keras.layers.Dropout(dropout_rate)
     self.norm1 = LayerNormalization()
     self.norm2 = LayerNormalization()
-    self.mlp_dense1 = keras.layers.Dense(mlp_dim, activation=tf.nn.gelu)
+    # TF1-compat mode may not expose tf.nn.gelu; rely on the Keras activation
+    # implementation to keep the intended nonlinearity available across
+    # TensorFlow versions.
+    self.mlp_dense1 = keras.layers.Dense(mlp_dim, activation=keras.activations.gelu)
     self.mlp_dropout1 = keras.layers.Dropout(dropout_rate)
     self.mlp_dense2 = keras.layers.Dense(hidden_size)
     self.mlp_dropout2 = keras.layers.Dropout(dropout_rate)
@@ -84,13 +87,15 @@ class DirectionalContextTransformer(keras.Model):
     """Contextualize the raw expectation vectors.
 
     Args:
-      expectation: [BATCH, 4, 3] tensor of raw expectation vectors.
+      expectation: [BATCH, N, 3] tensor of raw expectation vectors with N in {3,
+        4}.
       context_embedding: [BATCH, 1024] Siamese encoder bottleneck embedding.
       training: Whether the module is running in training mode.
 
     Returns:
-      [BATCH, 4, 3] tensor of refined, unit-normalized direction vectors.
+      [BATCH, N, 3] tensor of refined, unit-normalized direction vectors.
     """
+    expectation_length = tf.shape(expectation)[1]
     context_token = self.context_projection(context_embedding)
     context_token = context_token[:, tf.newaxis, :]
     tokens = tf.concat([expectation, context_token], axis=1)
@@ -123,5 +128,5 @@ class DirectionalContextTransformer(keras.Model):
     mlp_output = self.mlp_dropout2(mlp_output, training=training)
     token_features += mlp_output
 
-    refined = self.output_projection(token_features[:, :4, :])
+    refined = self.output_projection(token_features[:, :expectation_length, :])
     return tf.nn.l2_normalize(refined, axis=-1)
