@@ -55,7 +55,9 @@ flags.DEFINE_string('save_summary_dir', '', 'The directory to save summary.')
 flags.DEFINE_string(
     'checkpoint_dir', '', 'The directory to load the checkpoints.')
 flags.DEFINE_string(
-    'model', '9D', '9D(rotation), T(translation), Single(DirectionNet-Single)')
+    'model', '9D',
+    '9D(rotation), 6D(rotation), 9D+T (joint rotation+translation), '
+    'T(translation), Single(DirectionNet-Single)')
 flags.DEFINE_integer('batch', 1, 'Size of mini-batches.')
 flags.DEFINE_integer(
     'distribution_height', 64, 'The height dimension of output distributions.')
@@ -92,6 +94,7 @@ def streaming_median_metric(values):
 def eval_direction_net_rotation(src_img,
                                 trt_img,
                                 rotation_gt,
+                                translation_gt=None,
                                 n_output_distributions=3):
   """Evaluate the DirectionNet-R.
 
@@ -99,24 +102,34 @@ def eval_direction_net_rotation(src_img,
     src_img: [BATCH, HEIGHT, WIDTH, 3] input source images.
     trt_img: [BATCH, HEIGHT, WIDTH, 3] input target images.
     rotation_gt: [BATCH, 3, 3] ground truth rotation matrices.
-    n_output_distributions: (int) number of output distributions. (either two or
-    three) The model uses 9D representation for rotations when it is 3 and the
-    model uses 6D representation when it is 2.
+    translation_gt: Optional [BATCH, 3] translation vector used when evaluating
+      a joint rotation+translation head (n_output_distributions == 4).
+    n_output_distributions: (int) number of output distributions. (either two,
+    three, or four) The model uses 9D representation for rotations when it is 3
+    and the model uses 6D representation when it is 2. When set to 4 the model
+    predicts three rotation axes and one translation direction jointly.
 
   Returns:
     Tensorflow metrics.
 
   Raises:
-    ValueError: 'n_output_distributions' must be either 2 or 3.
+    ValueError: 'n_output_distributions' must be either 2, 3, or 4.
   """
-  if n_output_distributions != 3 and n_output_distributions != 2:
-    raise ValueError("'n_output_distributions' must be either 2 or 3.")
+  if n_output_distributions not in (2, 3, 4):
+    raise ValueError("'n_output_distributions' must be either 2, 3, or 4.")
 
   net = model.DirectionNet(n_output_distributions)
   transformer = None
   if FLAGS.enable_directional_transformer and n_output_distributions == 4:
     transformer = directional_transformer.DirectionalContextTransformer()
-  directions_gt = rotation_gt[:, :n_output_distributions]
+  if n_output_distributions == 4:
+    if translation_gt is None:
+      raise ValueError('translation_gt must be provided when '
+                       'n_output_distributions == 4')
+    translation_gt = tf.expand_dims(translation_gt, 1)
+    directions_gt = tf.concat([rotation_gt, translation_gt], 1)
+  else:
+    directions_gt = rotation_gt[:, :n_output_distributions]
   distribution_gt = util.spherical_normalization(util.von_mises_fisher(
       directions_gt,
       tf.constant(FLAGS.kappa, tf.float32),
@@ -128,14 +141,17 @@ def eval_direction_net_rotation(src_img,
       transformer=transformer,
       context_embedding=context_embedding,
       training=False)
-  if n_output_distributions == 3:
-    rotation_estimated = util.svd_orthogonalize(directions)
+  if n_output_distributions in (3, 4):
+    rotation_estimated = util.svd_orthogonalize(directions[:, :3])
   elif n_output_distributions == 2:
     rotation_estimated = util.gram_schmidt(directions)
   angular_errors = util.angular_distance(directions, directions_gt)
   x_error = tf.reduce_mean(angular_errors[:, 0])
   y_error = tf.reduce_mean(angular_errors[:, 1])
   z_error = tf.reduce_mean(angular_errors[:, 2])
+  translation_error = None
+  if n_output_distributions == 4:
+    translation_error = tf.reduce_mean(angular_errors[:, 3])
   rotation_error = tf.reduce_mean(util.rotation_geodesic(
       rotation_estimated, rotation_gt))
 
@@ -150,19 +166,23 @@ def eval_direction_net_rotation(src_img,
   tf.summary.image('source_image', src_img, max_outputs=4)
   tf.summary.image('target_image', trt_img, max_outputs=4)
 
-  metrics_to_values, metrics_to_updates = (
-      metrics.aggregate_metric_map({
-          'angular_error/x': tf.metrics.mean(
-              util.radians_to_degrees(x_error)),
-          'angular_error/y': tf.metrics.mean(
-              util.radians_to_degrees(y_error)),
-          'angular_error/z': tf.metrics.mean(
-              util.radians_to_degrees(z_error)),
-          'rotation_error': tf.metrics.mean(
-              util.radians_to_degrees(rotation_error)),
-          'rotation_error/median': streaming_median_metric(
-              tf.reshape(util.radians_to_degrees(rotation_error), (1,)))
-      }))
+  metric_map = {
+      'angular_error/x': tf.metrics.mean(util.radians_to_degrees(x_error)),
+      'angular_error/y': tf.metrics.mean(util.radians_to_degrees(y_error)),
+      'angular_error/z': tf.metrics.mean(util.radians_to_degrees(z_error)),
+      'rotation_error': tf.metrics.mean(util.radians_to_degrees(rotation_error)),
+      'rotation_error/median': streaming_median_metric(
+          tf.reshape(util.radians_to_degrees(rotation_error), (1,)))
+  }
+  if translation_error is not None:
+    metric_map.update({
+        'translation_error': tf.metrics.mean(
+            util.radians_to_degrees(translation_error)),
+        'translation_error/median': streaming_median_metric(
+            tf.reshape(util.radians_to_degrees(translation_error), (1,)))
+    })
+
+  metrics_to_values, metrics_to_updates = metrics.aggregate_metric_map(metric_map)
   return metrics_to_values, metrics_to_updates
 
 
@@ -359,10 +379,17 @@ def main(argv):
 
   if FLAGS.model == '9D':
     metrics_to_values, metrics_to_updates = eval_direction_net_rotation(
-        src_img, trt_img, rotation_gt, 3)
+        src_img, trt_img, rotation_gt, n_output_distributions=3)
   elif FLAGS.model == '6D':
     metrics_to_values, metrics_to_updates = eval_direction_net_rotation(
-        src_img, trt_img, rotation_gt, 2)
+        src_img, trt_img, rotation_gt, n_output_distributions=2)
+  elif FLAGS.model == '9D+T':
+    metrics_to_values, metrics_to_updates = eval_direction_net_rotation(
+        src_img,
+        trt_img,
+        rotation_gt,
+        translation_gt=translation_gt,
+        n_output_distributions=4)
   elif FLAGS.model == 'T':
     fov_gt = tf.squeeze(elements.fov, -1)
     rotation_pred = elements.rotation_pred
