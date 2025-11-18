@@ -301,17 +301,21 @@ def distributions_to_directions(x,
   """
   distribution_pred = spherical_normalization(x)
   expectation = spherical_expectation(distribution_pred)
+  expectation.set_shape([None, x.shape[-1], 3])
   expectation_normalized = tf.nn.l2_normalize(expectation, axis=-1)
 
   refined = expectation_normalized
   if transformer is not None:
     channels = expectation.shape.as_list()[1]
-    if channels == 4:
-      if context_embedding is None:
-        raise ValueError(
-            'context_embedding must be provided when using the transformer.')
-      refined = transformer(
-          expectation, context_embedding, training=training)
+    if channels not in (3, 4):
+      raise ValueError(
+          'Directional transformer supports 3 or 4 expectation vectors, '
+          'got %s.' % channels)
+    if context_embedding is None:
+      raise ValueError(
+          'context_embedding must be provided when using the transformer.')
+    refined = transformer(
+        expectation, context_embedding, training=training)
   return refined, expectation, distribution_pred
 
 

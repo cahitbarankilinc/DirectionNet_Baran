@@ -173,7 +173,7 @@ def direction_net_rotation(src_img,
 
   net = model.DirectionNet(n_output_distributions)
   transformer = None
-  if FLAGS.enable_directional_transformer and n_output_distributions == 4:
+  if FLAGS.enable_directional_transformer and n_output_distributions == 3:
     transformer = directional_transformer.DirectionalContextTransformer()
   global_step = tf.train.get_or_create_global_step()
   directions_gt = rotation_gt[:, :n_output_distributions]
