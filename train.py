@@ -48,8 +48,7 @@ flags.DEFINE_string(
     'data_dir', '', 'The training data directory.')
 flags.DEFINE_string(
     'model', '9D',
-    '9D (rotation), 6D (rotation), 9D+T (joint rotation+translation), '
-    'T (translation), Single (no derotation)')
+    '9D (rotation), 6D (rotation), T (translation), Single (no derotation)')
 flags.DEFINE_integer('batch', 20, 'The size of mini-batches.')
 flags.DEFINE_integer('n_epoch', 2, 'Number of training epochs.')
 flags.DEFINE_integer(
@@ -152,7 +151,6 @@ def _build_train_op(loss, global_step, net, transformer=None):
 def direction_net_rotation(src_img,
                            trt_img,
                            rotation_gt,
-                           translation_gt=None,
                            n_output_distributions=3):
   """Build the computation graph to train the DirectionNet-R.
 
@@ -160,35 +158,25 @@ def direction_net_rotation(src_img,
     src_img: [BATCH, HEIGHT, WIDTH, 3] input source images.
     trt_img: [BATCH, HEIGHT, WIDTH, 3] input target images.
     rotation_gt: [BATCH, 3, 3] ground truth rotation matrices.
-    translation_gt: Optional [BATCH, 3] translation vector used when training a
-      joint rotation+translation head (n_output_distributions == 4).
-    n_output_distributions: (int) number of output distributions. (either two,
-    three, or four). The model uses 9D representation for rotations when it is 3
-    and the model uses 6D representation when it is 2. When set to 4 the model
-    predicts three rotation axes and one translation direction jointly.
+    n_output_distributions: (int) number of output distributions. (either two or
+    three) The model uses 9D representation for rotations when it is 3 and the
+    model uses 6D representation when it is 2.
 
   Returns:
     A collection of tensors including training ops, loss, and global step count.
 
   Raises:
-    ValueError: 'n_output_distributions' must be either 2, 3, or 4.
+    ValueError: 'n_output_distributions' must be either 2 or 3.
   """
-  if n_output_distributions not in (2, 3, 4):
-    raise ValueError("'n_output_distributions' must be either 2, 3, or 4.")
+  if n_output_distributions != 3 and n_output_distributions != 2:
+    raise ValueError("'n_output_distributions' must be either 2 or 3.")
 
   net = model.DirectionNet(n_output_distributions)
   transformer = None
   if FLAGS.enable_directional_transformer and n_output_distributions == 4:
     transformer = directional_transformer.DirectionalContextTransformer()
   global_step = tf.train.get_or_create_global_step()
-  if n_output_distributions == 4:
-    if translation_gt is None:
-      raise ValueError('translation_gt must be provided when '
-                       'n_output_distributions == 4')
-    translation_gt = tf.expand_dims(translation_gt, 1)
-    directions_gt = tf.concat([rotation_gt, translation_gt], 1)
-  else:
-    directions_gt = rotation_gt[:, :n_output_distributions]
+  directions_gt = rotation_gt[:, :n_output_distributions]
   distribution_gt = util.spherical_normalization(util.von_mises_fisher(
       directions_gt,
       tf.constant(FLAGS.kappa, tf.float32),
@@ -200,8 +188,8 @@ def direction_net_rotation(src_img,
       transformer=transformer,
       context_embedding=context_embedding,
       training=True)
-  if n_output_distributions in (3, 4):
-    rotation_estimated = util.svd_orthogonalize(directions[:, :3])
+  if n_output_distributions == 3:
+    rotation_estimated = util.svd_orthogonalize(directions)
   elif n_output_distributions == 2:
     rotation_estimated = util.gram_schmidt(directions)
 
@@ -217,10 +205,6 @@ def direction_net_rotation(src_img,
       rotation_estimated, rotation_gt))
   direction_error = tf.reduce_mean(tf.acos(tf.clip_by_value(
       tf.reduce_sum(directions * directions_gt, -1), -1., 1.)))
-  translation_error = None
-  if n_output_distributions == 4:
-    translation_error = tf.reduce_mean(tf.acos(tf.clip_by_value(
-        tf.reduce_sum(directions[:, -1] * directions_gt[:, -1], -1), -1., 1.)))
 
   loss = direction_loss + distribution_loss + spread_loss
 
@@ -231,9 +215,6 @@ def direction_net_rotation(src_img,
                     util.radians_to_degrees(direction_error))
   tf.summary.scalar('rotation_error',
                     util.radians_to_degrees(rotation_error))
-  if translation_error is not None:
-    tf.summary.scalar('translation_error',
-                      util.radians_to_degrees(translation_error))
 
   for i in range(n_output_distributions):
     tf.summary.image('distribution/rotation/ground_truth_%d'%(i+1),
@@ -370,7 +351,6 @@ def direction_net_single(src_img, trt_img, rotation_gt, translation_gt):
   if FLAGS.enable_directional_transformer:
     transformer = directional_transformer.DirectionalContextTransformer()
   global_step = tf.train.get_or_create_global_step()
-  translation_gt = tf.expand_dims(translation_gt, 1)
   directions_gt = tf.concat([rotation_gt, translation_gt], 1)
   distribution_gt = util.spherical_normalization(util.von_mises_fisher(
       directions_gt,
@@ -463,18 +443,9 @@ def main(argv):
 
     print('Create computation graph.')
     if FLAGS.model == '9D':
-      computation = direction_net_rotation(src_img, trt_img, rotation_gt,
-                                           n_output_distributions=3)
+      computation = direction_net_rotation(src_img, trt_img, rotation_gt, 3)
     elif FLAGS.model == '6D':
-      computation = direction_net_rotation(src_img, trt_img, rotation_gt,
-                                           n_output_distributions=2)
-    elif FLAGS.model == '9D+T':
-      computation = direction_net_rotation(
-          src_img,
-          trt_img,
-          rotation_gt,
-          translation_gt=translation_gt,
-          n_output_distributions=4)
+      computation = direction_net_rotation(src_img, trt_img, rotation_gt, 2)
     elif FLAGS.model == 'T':
       fov_gt = tf.squeeze(elements.fov, -1)
       rotation_pred = elements.rotation_pred
