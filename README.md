@@ -138,6 +138,30 @@ python eval.py \
   --model 9D
 ```
 
+## Transformer'lı ortak mod için kısacık özet
+- **`9D+T` model seçeneği**: Üç rotasyon kafasına ek bir çeviri kafası üretir. Bu yapı sayesinde transformer, rotasyon ve çeviri token’larını birlikte iyileştirir.
+- **Bayrak**: `--enable_directional_transformer=True` varsayılan olarak açık, kapatmak isterseniz `False` geçebilirsiniz.
+- **Kullanım örneği (eğitim)**:
+  ```bash
+  python -u train.py \
+    --checkpoint_dir checkpoints/R_joint \
+    --data_dir data/MatterportA/test \
+    --model 9D+T \
+    --batch 2
+  ```
+- **Kullanım örneği (değerlendirme)**:
+  ```bash
+  python eval.py \
+    --checkpoint_dir checkpoints/R_joint \
+    --eval_data_dir data/MatterportA \
+    --save_summary_dir logs/eval_R_joint \
+    --testset_size 1000 \
+    --batch 8 \
+    --model 9D+T \
+    --enable_directional_transformer=True
+  ```
+- **Gereken veri**: `dataset_loader` rotasyon yanında çeviri yer tutucu da döndürdüğünden ek veri hazırlığı gerekmiyor; sadece `--model 9D+T` seçimi rotasyon+çeviri kayıplarını birlikte optimize ediyor.
+
 
 
 <br><br>
