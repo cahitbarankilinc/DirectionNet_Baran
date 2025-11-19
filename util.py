@@ -16,6 +16,8 @@
 """Utilities for math and geometry operations."""
 import math
 import pickle
+
+from absl import logging
 from pano_utils import geometry
 from pano_utils import math_utils
 from pano_utils import transformation
@@ -23,6 +25,9 @@ import tensorflow.compat.v1 as tf
 from tensorflow_graphics.geometry.transformation import axis_angle
 from tensorflow_graphics.geometry.transformation import rotation_matrix_3d
 import tensorflow_probability as tfp
+
+
+_TRANSFORMER_DISABLED_LOGGED = False
 
 
 def read_pickle(file):
@@ -316,6 +321,13 @@ def distributions_to_directions(x,
           'context_embedding must be provided when using the transformer.')
     refined = transformer(
         expectation, context_embedding, training=training)
+  else:
+    global _TRANSFORMER_DISABLED_LOGGED
+    if not _TRANSFORMER_DISABLED_LOGGED:
+      logging.info(
+          'Directional transformer disabled; falling back to normalized '
+          'expectation vectors without contextual refinement.')
+      _TRANSFORMER_DISABLED_LOGGED = True
   return refined, expectation, distribution_pred
 
 

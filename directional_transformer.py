@@ -3,6 +3,7 @@
 
 import math
 
+from absl import logging
 import tensorflow.compat.v1 as tf
 from tensorflow.compat.v1 import keras
 
@@ -77,6 +78,9 @@ class DirectionalContextTransformer(keras.Model):
     self.mlp_dense2 = keras.layers.Dense(hidden_size)
     self.mlp_dropout2 = keras.layers.Dropout(dropout_rate)
     self.output_projection = keras.layers.Dense(3)
+    # Avoid spamming logs—only announce activation the first time the module
+    # participates in the graph.
+    self._usage_logged = False
 
   def _split_heads(self, x):
     batch = tf.shape(x)[0]
@@ -136,4 +140,18 @@ class DirectionalContextTransformer(keras.Model):
     token_features += mlp_output
 
     refined = self.output_projection(token_features[:, :expectation_length, :])
-    return tf.nn.l2_normalize(refined, axis=-1)
+    outputs = tf.nn.l2_normalize(refined, axis=-1)
+    if not self._usage_logged:
+      try:
+        param_count = self.count_params()
+      except ValueError:
+        param_count = None
+      mode = 'training' if training else 'inference'
+      if param_count is not None:
+        logging.info(
+            'Directional transformer active in %s mode with %d trainable '
+            'parameters.', mode, param_count)
+      else:
+        logging.info('Directional transformer active in %s mode.', mode)
+      self._usage_logged = True
+    return outputs
