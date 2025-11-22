@@ -47,8 +47,8 @@ class DirectionalContextTransformer(keras.Model):
   """Lightweight transformer that contextualizes direction tokens."""
 
   def __init__(self,
-               hidden_size=128,
-               num_heads=4,
+               hidden_size=256,
+               num_heads=8,
                mlp_dim=256,
                dropout_rate=0.1,
                name='directional_context_transformer'):
