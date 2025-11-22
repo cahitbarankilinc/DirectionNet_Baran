@@ -49,7 +49,7 @@ class DirectionalContextTransformer(keras.Model):
   def __init__(self,
                hidden_size=256,
                num_heads=8,
-               mlp_dim=256,
+               mlp_dim=512,
                dropout_rate=0.1,
                name='directional_context_transformer'):
     super(DirectionalContextTransformer, self).__init__(name=name)
