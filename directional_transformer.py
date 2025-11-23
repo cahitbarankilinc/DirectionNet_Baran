@@ -43,6 +43,57 @@ class LayerNormalization(keras.layers.Layer):
     return normalized * self.gamma + self.beta
 
 
+class _TransformerBlock(keras.layers.Layer):
+  """Single transformer encoder block with independent parameters."""
+
+  def __init__(self, hidden_size, num_heads, head_dim, mlp_dim, dropout_rate,
+               name=None):
+    super(_TransformerBlock, self).__init__(name=name)
+    self.num_heads = num_heads
+    self.head_dim = head_dim
+    self.dropout_rate = dropout_rate
+
+    self.norm1 = LayerNormalization()
+    self.attention_qkv = keras.layers.Dense(hidden_size * 3, use_bias=False)
+    self.attention_output = keras.layers.Dense(hidden_size, use_bias=False)
+    self.attention_dropout = keras.layers.Dropout(dropout_rate)
+    self.attention_output_dropout = keras.layers.Dropout(dropout_rate)
+    # TF1-compat mode may not expose tf.nn.gelu or keras.activations.gelu; use a
+    # local approximation to retain the intended nonlinearity consistently.
+    self.norm2 = LayerNormalization()
+    self.mlp_dense1 = keras.layers.Dense(mlp_dim, activation=_approximate_gelu)
+    self.mlp_dropout1 = keras.layers.Dropout(dropout_rate)
+    self.mlp_dense2 = keras.layers.Dense(hidden_size)
+    self.mlp_dropout2 = keras.layers.Dropout(dropout_rate)
+
+  def call(self, token_features, *, training, split_heads_fn, merge_heads_fn):
+    attn_input = self.norm1(token_features)
+    qkv = self.attention_qkv(attn_input)
+    q, k, v = tf.split(qkv, 3, axis=-1)
+    q = split_heads_fn(q)
+    k = split_heads_fn(k)
+    v = split_heads_fn(v)
+    scale = tf.cast(self.head_dim, attn_input.dtype) ** -0.5
+    attention_logits = tf.matmul(q, k, transpose_b=True) * scale
+    attention_weights = tf.nn.softmax(attention_logits, axis=-1)
+    attention_weights = self.attention_dropout(attention_weights,
+                                               training=training)
+    attention_output = tf.matmul(attention_weights, v)
+    attention_output = merge_heads_fn(attention_output)
+    attention_output = self.attention_output(attention_output)
+    attention_output = self.attention_output_dropout(attention_output,
+                                                     training=training)
+    token_features += attention_output
+
+    mlp_input = self.norm2(token_features)
+    mlp_output = self.mlp_dense1(mlp_input)
+    mlp_output = self.mlp_dropout1(mlp_output, training=training)
+    mlp_output = self.mlp_dense2(mlp_output)
+    mlp_output = self.mlp_dropout2(mlp_output, training=training)
+    token_features += mlp_output
+    return token_features
+
+
 class DirectionalContextTransformer(keras.Model):
   """Lightweight transformer that contextualizes direction tokens."""
 
@@ -50,6 +101,7 @@ class DirectionalContextTransformer(keras.Model):
                hidden_size=256,
                num_heads=8,
                mlp_dim=512,
+               num_layers=1,
                dropout_rate=0.1,
                name='directional_context_transformer'):
     super(DirectionalContextTransformer, self).__init__(name=name)
@@ -58,6 +110,7 @@ class DirectionalContextTransformer(keras.Model):
     self.hidden_size = hidden_size
     self.num_heads = num_heads
     self.head_dim = hidden_size // num_heads
+    self.num_layers = num_layers
     self.dropout_rate = dropout_rate
 
     self.input_projection = keras.layers.Dense(hidden_size)
@@ -66,17 +119,16 @@ class DirectionalContextTransformer(keras.Model):
         'positional_embedding',
         shape=[1, 5, hidden_size],
         initializer=tf.initializers.glorot_uniform())
-    self.attention_qkv = keras.layers.Dense(hidden_size * 3, use_bias=False)
-    self.attention_output = keras.layers.Dense(hidden_size, use_bias=False)
-    self.attention_dropout = keras.layers.Dropout(dropout_rate)
-    self.norm1 = LayerNormalization()
-    self.norm2 = LayerNormalization()
-    # TF1-compat mode may not expose tf.nn.gelu or keras.activations.gelu; use a
-    # local approximation to retain the intended nonlinearity consistently.
-    self.mlp_dense1 = keras.layers.Dense(mlp_dim, activation=_approximate_gelu)
-    self.mlp_dropout1 = keras.layers.Dropout(dropout_rate)
-    self.mlp_dense2 = keras.layers.Dense(hidden_size)
-    self.mlp_dropout2 = keras.layers.Dropout(dropout_rate)
+    self.transformer_blocks = []
+    for i in range(num_layers):
+      block = _TransformerBlock(
+          hidden_size=hidden_size,
+          num_heads=num_heads,
+          head_dim=self.head_dim,
+          mlp_dim=mlp_dim,
+          dropout_rate=dropout_rate,
+          name=f'transformer_block_{i}')
+      self.transformer_blocks.append(block)
     self.output_projection = keras.layers.Dense(3)
     # Avoid spamming logs—only announce activation the first time the module
     # participates in the graph.
@@ -114,30 +166,12 @@ class DirectionalContextTransformer(keras.Model):
     token_features = self.input_projection(tokens)
     token_features += self.positional_embedding[:, :tf.shape(token_features)[1], :]
 
-    # Multi-head self-attention with pre-norm residual.
-    attn_input = self.norm1(token_features)
-    qkv = self.attention_qkv(attn_input)
-    q, k, v = tf.split(qkv, 3, axis=-1)
-    q = self._split_heads(q)
-    k = self._split_heads(k)
-    v = self._split_heads(v)
-    scale = tf.cast(self.head_dim, attn_input.dtype) ** -0.5
-    attention_logits = tf.matmul(q, k, transpose_b=True) * scale
-    attention_weights = tf.nn.softmax(attention_logits, axis=-1)
-    attention_weights = self.attention_dropout(attention_weights, training=training)
-    attention_output = tf.matmul(attention_weights, v)
-    attention_output = self._merge_heads(attention_output)
-    attention_output = self.attention_output(attention_output)
-    attention_output = self.attention_dropout(attention_output, training=training)
-    token_features += attention_output
-
-    # Feed-forward block with pre-norm residual.
-    mlp_input = self.norm2(token_features)
-    mlp_output = self.mlp_dense1(mlp_input)
-    mlp_output = self.mlp_dropout1(mlp_output, training=training)
-    mlp_output = self.mlp_dense2(mlp_output)
-    mlp_output = self.mlp_dropout2(mlp_output, training=training)
-    token_features += mlp_output
+    for block in self.transformer_blocks:
+      token_features = block(
+          token_features,
+          training=training,
+          split_heads_fn=self._split_heads,
+          merge_heads_fn=self._merge_heads)
 
     refined = self.output_projection(token_features[:, :expectation_length, :])
     outputs = tf.nn.l2_normalize(refined, axis=-1)
