@@ -103,6 +103,7 @@ class DirectionalContextTransformer(keras.Model):
                mlp_dim=512,
                num_layers=1,
                dropout_rate=0.1,
+               context_token_count=2,
                name='directional_context_transformer'):
     super(DirectionalContextTransformer, self).__init__(name=name)
     if hidden_size % num_heads != 0:
@@ -112,12 +113,13 @@ class DirectionalContextTransformer(keras.Model):
     self.head_dim = hidden_size // num_heads
     self.num_layers = num_layers
     self.dropout_rate = dropout_rate
+    self.context_token_count = context_token_count
 
     self.input_projection = keras.layers.Dense(hidden_size)
-    self.context_projection = keras.layers.Dense(hidden_size)
+    self.context_projection = keras.layers.Dense(hidden_size * context_token_count)
     self.positional_embedding = self.add_weight(
         'positional_embedding',
-        shape=[1, 5, hidden_size],
+        shape=[1, 4 + context_token_count, hidden_size],
         initializer=tf.initializers.glorot_uniform())
     self.transformer_blocks = []
     for i in range(num_layers):
@@ -159,10 +161,12 @@ class DirectionalContextTransformer(keras.Model):
       [BATCH, N, 3] tensor of refined, unit-normalized direction vectors.
     """
     expectation_length = tf.shape(expectation)[1]
-    context_token = self.context_projection(context_embedding)
-    context_token = context_token[:, tf.newaxis, :]
+    context_tokens = self.context_projection(context_embedding)
+    context_tokens = tf.reshape(
+        context_tokens,
+        [tf.shape(context_tokens)[0], self.context_token_count, self.hidden_size])
     expectation_features = self.input_projection(expectation)
-    token_features = tf.concat([expectation_features, context_token], axis=1)
+    token_features = tf.concat([context_tokens, expectation_features], axis=1)
     token_features += self.positional_embedding[:, :tf.shape(token_features)[1], :]
 
     for block in self.transformer_blocks:
@@ -172,7 +176,8 @@ class DirectionalContextTransformer(keras.Model):
           split_heads_fn=self._split_heads,
           merge_heads_fn=self._merge_heads)
 
-    refined = self.output_projection(token_features[:, :expectation_length, :])
+    refined = self.output_projection(
+        token_features[:, self.context_token_count:self.context_token_count + expectation_length, :])
     outputs = tf.nn.l2_normalize(refined, axis=-1)
     if not self._usage_logged:
       try:
