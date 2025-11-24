@@ -114,7 +114,7 @@ class DirectionalContextTransformer(keras.Model):
     self.dropout_rate = dropout_rate
 
     self.input_projection = keras.layers.Dense(hidden_size)
-    self.context_projection = keras.layers.Dense(3)
+    self.context_projection = keras.layers.Dense(hidden_size)
     self.positional_embedding = self.add_weight(
         'positional_embedding',
         shape=[1, 5, hidden_size],
@@ -159,11 +159,10 @@ class DirectionalContextTransformer(keras.Model):
       [BATCH, N, 3] tensor of refined, unit-normalized direction vectors.
     """
     expectation_length = tf.shape(expectation)[1]
+    expectation_features = self.input_projection(expectation)
     context_token = self.context_projection(context_embedding)
     context_token = context_token[:, tf.newaxis, :]
-    tokens = tf.concat([expectation, context_token], axis=1)
-
-    token_features = self.input_projection(tokens)
+    token_features = tf.concat([expectation_features, context_token], axis=1)
     token_features += self.positional_embedding[:, :tf.shape(token_features)[1], :]
 
     for block in self.transformer_blocks:
