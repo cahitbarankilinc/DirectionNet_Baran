@@ -115,10 +115,6 @@ class DirectionalContextTransformer(keras.Model):
 
     self.input_projection = keras.layers.Dense(hidden_size)
     self.context_projection = keras.layers.Dense(3)
-    self.positional_embedding = self.add_weight(
-        'positional_embedding',
-        shape=[1, 5, hidden_size],
-        initializer=tf.initializers.glorot_uniform())
     self.transformer_blocks = []
     for i in range(num_layers):
       block = _TransformerBlock(
@@ -146,6 +142,19 @@ class DirectionalContextTransformer(keras.Model):
     x = tf.transpose(x, [0, 2, 1, 3])
     return tf.reshape(x, [batch, length, self.hidden_size])
 
+  def _sinusoidal_positional_embedding(self, length, dtype):
+    """Creates a sinusoidal positional embedding for `length` tokens."""
+    position = tf.cast(tf.range(length)[:, tf.newaxis], dtype)
+    div_term = tf.cast(
+        tf.exp(
+            tf.range(0, self.hidden_size, delta=2, dtype=dtype)
+            * (-math.log(10000.0) / tf.cast(self.hidden_size, dtype))),
+        dtype)
+    angle_rads = position * div_term[tf.newaxis, :]
+    sin_cos = tf.stack([tf.sin(angle_rads), tf.cos(angle_rads)], axis=-1)
+    embedding = tf.reshape(sin_cos, [length, -1])
+    return embedding[:, :self.hidden_size]
+
   def call(self, expectation, context_embedding, training=False):
     """Contextualize the raw expectation vectors.
 
@@ -164,7 +173,10 @@ class DirectionalContextTransformer(keras.Model):
     tokens = tf.concat([expectation, context_token], axis=1)
 
     token_features = self.input_projection(tokens)
-    token_features += self.positional_embedding[:, :tf.shape(token_features)[1], :]
+    seq_length = tf.shape(token_features)[1]
+    positional_embedding = self._sinusoidal_positional_embedding(
+        seq_length, token_features.dtype)
+    token_features += positional_embedding[tf.newaxis, :, :]
 
     for block in self.transformer_blocks:
       token_features = block(
