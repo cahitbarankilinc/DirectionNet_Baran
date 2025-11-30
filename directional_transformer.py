@@ -43,28 +43,78 @@ class LayerNormalization(keras.layers.Layer):
     return normalized * self.gamma + self.beta
 
 
+class RMSNormalization(keras.layers.Layer):
+  """RMSNorm variant compatible with TF1 graph mode."""
+
+  def __init__(self, epsilon=1e-6, **kwargs):
+    super(RMSNormalization, self).__init__(**kwargs)
+    self.epsilon = epsilon
+
+  def build(self, input_shape):
+    dim = input_shape[-1]
+    if dim is None:
+      raise ValueError(
+          'The last dimension of the input to RMSNormalization must be set.')
+    self.gamma = self.add_weight(
+        'gamma',
+        shape=[dim],
+        initializer=tf.initializers.ones())
+    super(RMSNormalization, self).build(input_shape)
+
+  def call(self, inputs):
+    variance = tf.reduce_mean(tf.square(inputs), axis=-1, keepdims=True)
+    normalized = inputs * tf.math.rsqrt(variance + self.epsilon)
+    return normalized * self.gamma
+
+
+class DropPath(keras.layers.Layer):
+  """Stochastic depth regularization layer."""
+
+  def __init__(self, rate=0.0, **kwargs):
+    super(DropPath, self).__init__(**kwargs)
+    self.rate = rate
+
+  def call(self, inputs, training=None):
+    if (training is False) or self.rate == 0.0:
+      return inputs
+    keep_prob = 1.0 - self.rate
+    batch_size = tf.shape(inputs)[0]
+    random_tensor = keep_prob + tf.random.uniform([batch_size, 1, 1],
+                                                  dtype=inputs.dtype)
+    binary_tensor = tf.floor(random_tensor)
+    return (inputs / keep_prob) * binary_tensor
+
+
 class _TransformerBlock(keras.layers.Layer):
   """Single transformer encoder block with independent parameters."""
 
-  def __init__(self, hidden_size, num_heads, head_dim, mlp_dim, dropout_rate,
-               name=None):
+  def __init__(self, hidden_size, num_heads, head_dim, mlp_dim,
+               attention_dropout_rate, mlp_dropout_rate, drop_path_rate,
+               normalization='layer', norm_epsilon=1e-6, name=None):
     super(_TransformerBlock, self).__init__(name=name)
     self.num_heads = num_heads
     self.head_dim = head_dim
-    self.dropout_rate = dropout_rate
 
-    self.norm1 = LayerNormalization()
+    self.norm1 = self._build_norm(normalization, norm_epsilon)
     self.attention_qkv = keras.layers.Dense(hidden_size * 3, use_bias=False)
     self.attention_output = keras.layers.Dense(hidden_size, use_bias=False)
-    self.attention_dropout = keras.layers.Dropout(dropout_rate)
-    self.attention_output_dropout = keras.layers.Dropout(dropout_rate)
+    self.attention_dropout = keras.layers.Dropout(attention_dropout_rate)
+    self.attention_output_dropout = keras.layers.Dropout(attention_dropout_rate)
     # TF1-compat mode may not expose tf.nn.gelu or keras.activations.gelu; use a
     # local approximation to retain the intended nonlinearity consistently.
-    self.norm2 = LayerNormalization()
+    self.norm2 = self._build_norm(normalization, norm_epsilon)
     self.mlp_dense1 = keras.layers.Dense(mlp_dim, activation=_approximate_gelu)
-    self.mlp_dropout1 = keras.layers.Dropout(dropout_rate)
+    self.mlp_dropout1 = keras.layers.Dropout(mlp_dropout_rate)
     self.mlp_dense2 = keras.layers.Dense(hidden_size)
-    self.mlp_dropout2 = keras.layers.Dropout(dropout_rate)
+    self.mlp_dropout2 = keras.layers.Dropout(mlp_dropout_rate)
+    self.drop_path = DropPath(rate=drop_path_rate)
+
+  def _build_norm(self, normalization, epsilon):
+    if normalization == 'layer':
+      return LayerNormalization(epsilon=epsilon)
+    if normalization == 'rms':
+      return RMSNormalization(epsilon=epsilon)
+    raise ValueError('normalization must be one of {"layer", "rms"}.')
 
   def call(self, token_features, *, training, split_heads_fn, merge_heads_fn):
     attn_input = self.norm1(token_features)
@@ -83,14 +133,14 @@ class _TransformerBlock(keras.layers.Layer):
     attention_output = self.attention_output(attention_output)
     attention_output = self.attention_output_dropout(attention_output,
                                                      training=training)
-    token_features += attention_output
+    token_features += self.drop_path(attention_output, training=training)
 
     mlp_input = self.norm2(token_features)
     mlp_output = self.mlp_dense1(mlp_input)
     mlp_output = self.mlp_dropout1(mlp_output, training=training)
     mlp_output = self.mlp_dense2(mlp_output)
     mlp_output = self.mlp_dropout2(mlp_output, training=training)
-    token_features += mlp_output
+    token_features += self.drop_path(mlp_output, training=training)
     return token_features
 
 
@@ -102,7 +152,12 @@ class DirectionalContextTransformer(keras.Model):
                num_heads=8,
                mlp_dim=512,
                num_layers=1,
-               dropout_rate=0.1,
+               dropout_rate=None,
+               attention_dropout_rate=0.1,
+               mlp_dropout_rate=0.05,
+               drop_path_rate=0.05,
+               normalization='layer',
+               norm_epsilon=1e-6,
                num_directions=3,
                name='directional_context_transformer'):
     super(DirectionalContextTransformer, self).__init__(name=name)
@@ -112,7 +167,11 @@ class DirectionalContextTransformer(keras.Model):
     self.num_heads = num_heads
     self.head_dim = hidden_size // num_heads
     self.num_layers = num_layers
-    self.dropout_rate = dropout_rate
+    self.attention_dropout_rate = (
+        attention_dropout_rate if dropout_rate is None else dropout_rate)
+    self.mlp_dropout_rate = (
+        mlp_dropout_rate if dropout_rate is None else dropout_rate)
+    self.drop_path_rate = drop_path_rate
     self.num_directions = num_directions
 
     self.input_projection = keras.layers.Dense(hidden_size)
@@ -123,12 +182,17 @@ class DirectionalContextTransformer(keras.Model):
         initializer=tf.initializers.glorot_uniform())
     self.transformer_blocks = []
     for i in range(num_layers):
+      block_drop_path = self.drop_path_rate * float(i + 1) / float(num_layers)
       block = _TransformerBlock(
           hidden_size=hidden_size,
           num_heads=num_heads,
           head_dim=self.head_dim,
           mlp_dim=mlp_dim,
-          dropout_rate=dropout_rate,
+          attention_dropout_rate=self.attention_dropout_rate,
+          mlp_dropout_rate=self.mlp_dropout_rate,
+          drop_path_rate=block_drop_path,
+          normalization=normalization,
+          norm_epsilon=norm_epsilon,
           name=f'transformer_block_{i}')
       self.transformer_blocks.append(block)
     self.output_projection = keras.layers.Dense(3 * num_directions)
