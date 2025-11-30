@@ -102,6 +102,7 @@ class DirectionalContextTransformer(keras.Model):
                num_heads=8,
                mlp_dim=512,
                num_layers=1,
+               num_directions=1,
                dropout_rate=0.1,
                name='directional_context_transformer'):
     super(DirectionalContextTransformer, self).__init__(name=name)
@@ -111,6 +112,7 @@ class DirectionalContextTransformer(keras.Model):
     self.num_heads = num_heads
     self.head_dim = hidden_size // num_heads
     self.num_layers = num_layers
+    self.num_directions = num_directions
     self.dropout_rate = dropout_rate
 
     self.input_projection = keras.layers.Dense(hidden_size)
@@ -129,7 +131,7 @@ class DirectionalContextTransformer(keras.Model):
           dropout_rate=dropout_rate,
           name=f'transformer_block_{i}')
       self.transformer_blocks.append(block)
-    self.output_projection = keras.layers.Dense(3)
+    self.output_projection = keras.layers.Dense(3 * num_directions)
     # Avoid spamming logs—only announce activation the first time the module
     # participates in the graph.
     self._usage_logged = False
@@ -156,7 +158,8 @@ class DirectionalContextTransformer(keras.Model):
       training: Whether the module is running in training mode.
 
     Returns:
-      [BATCH, N, 3] tensor of refined, unit-normalized direction vectors.
+      [BATCH, N, num_directions, 3] tensor of refined, unit-normalized
+      direction vectors.
     """
     expectation_length = tf.shape(expectation)[1]
     context_token = self.context_projection(context_embedding)
@@ -174,6 +177,9 @@ class DirectionalContextTransformer(keras.Model):
           merge_heads_fn=self._merge_heads)
 
     refined = self.output_projection(token_features[:, :expectation_length, :])
+    refined = tf.reshape(refined,
+                         [tf.shape(refined)[0], expectation_length,
+                          self.num_directions, 3])
     outputs = tf.nn.l2_normalize(refined, axis=-1)
     if not self._usage_logged:
       try:
