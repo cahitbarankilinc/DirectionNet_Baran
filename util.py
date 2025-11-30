@@ -321,6 +321,10 @@ def distributions_to_directions(x,
           'context_embedding must be provided when using the transformer.')
     refined = transformer(
         expectation, context_embedding, training=training)
+    if refined.shape.ndims == 4:
+      # Collapse the multiple direction heads back to a single direction per
+      # token for downstream losses/metrics that expect [BATCH, N, 3].
+      refined = tf.nn.l2_normalize(tf.reduce_mean(refined, axis=2), axis=-1)
   else:
     global _TRANSFORMER_DISABLED_LOGGED
     if not _TRANSFORMER_DISABLED_LOGGED:
