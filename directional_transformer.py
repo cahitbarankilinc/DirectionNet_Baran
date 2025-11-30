@@ -103,6 +103,7 @@ class DirectionalContextTransformer(keras.Model):
                mlp_dim=512,
                num_layers=1,
                dropout_rate=0.1,
+               num_directions=3,
                name='directional_context_transformer'):
     super(DirectionalContextTransformer, self).__init__(name=name)
     if hidden_size % num_heads != 0:
@@ -112,6 +113,7 @@ class DirectionalContextTransformer(keras.Model):
     self.head_dim = hidden_size // num_heads
     self.num_layers = num_layers
     self.dropout_rate = dropout_rate
+    self.num_directions = num_directions
 
     self.input_projection = keras.layers.Dense(hidden_size)
     self.context_projection = keras.layers.Dense(3)
@@ -129,7 +131,7 @@ class DirectionalContextTransformer(keras.Model):
           dropout_rate=dropout_rate,
           name=f'transformer_block_{i}')
       self.transformer_blocks.append(block)
-    self.output_projection = keras.layers.Dense(3)
+    self.output_projection = keras.layers.Dense(3 * num_directions)
     # Avoid spamming logs—only announce activation the first time the module
     # participates in the graph.
     self._usage_logged = False
@@ -156,7 +158,8 @@ class DirectionalContextTransformer(keras.Model):
       training: Whether the module is running in training mode.
 
     Returns:
-      [BATCH, N, 3] tensor of refined, unit-normalized direction vectors.
+      [BATCH, N, NUM_DIRECTIONS, 3] tensor of refined, unit-normalized
+      direction vectors.
     """
     expectation_length = tf.shape(expectation)[1]
     context_token = self.context_projection(context_embedding)
@@ -174,6 +177,9 @@ class DirectionalContextTransformer(keras.Model):
           merge_heads_fn=self._merge_heads)
 
     refined = self.output_projection(token_features[:, :expectation_length, :])
+    refined = tf.reshape(refined,
+                         [tf.shape(refined)[0], expectation_length,
+                          self.num_directions, 3])
     outputs = tf.nn.l2_normalize(refined, axis=-1)
     if not self._usage_logged:
       try:
