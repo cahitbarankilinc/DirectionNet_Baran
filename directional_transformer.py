@@ -14,6 +14,18 @@ def _approximate_gelu(x):
   return 0.5 * x * (1.0 + tf.tanh(coeff * (x + 0.044715 * tf.pow(x, 3))))
 
 
+def _resolve_mlp_activation(name):
+  """Returns the activation callable for the transformer MLP."""
+  if name == 'elu':
+    return tf.nn.elu
+  if name == 'selu':
+    return tf.nn.selu
+  if name == 'gelu':
+    return getattr(keras.activations, 'gelu', _approximate_gelu)
+  raise ValueError(
+      f"Unsupported mlp_activation '{name}'. Use one of: gelu, elu, selu.")
+
+
 class LayerNormalization(keras.layers.Layer):
   """Layer normalization supporting TF1 graph mode."""
 
@@ -47,7 +59,7 @@ class _TransformerBlock(keras.layers.Layer):
   """Single transformer encoder block with independent parameters."""
 
   def __init__(self, hidden_size, num_heads, head_dim, mlp_dim, dropout_rate,
-               name=None):
+               mlp_activation='gelu', name=None):
     super(_TransformerBlock, self).__init__(name=name)
     self.num_heads = num_heads
     self.head_dim = head_dim
@@ -58,10 +70,12 @@ class _TransformerBlock(keras.layers.Layer):
     self.attention_output = keras.layers.Dense(hidden_size, use_bias=False)
     self.attention_dropout = keras.layers.Dropout(dropout_rate)
     self.attention_output_dropout = keras.layers.Dropout(dropout_rate)
-    # TF1-compat mode may not expose tf.nn.gelu or keras.activations.gelu; use a
-    # local approximation to retain the intended nonlinearity consistently.
     self.norm2 = LayerNormalization()
-    self.mlp_dense1 = keras.layers.Dense(mlp_dim, activation=_approximate_gelu)
+    activation = _resolve_mlp_activation(mlp_activation)
+    kernel_initializer = (
+        keras.initializers.lecun_normal() if mlp_activation == 'selu' else None)
+    self.mlp_dense1 = keras.layers.Dense(
+        mlp_dim, activation=activation, kernel_initializer=kernel_initializer)
     self.mlp_dropout1 = keras.layers.Dropout(dropout_rate)
     self.mlp_dense2 = keras.layers.Dense(hidden_size)
     self.mlp_dropout2 = keras.layers.Dropout(dropout_rate)
@@ -101,6 +115,7 @@ class DirectionalContextTransformer(keras.Model):
                hidden_size=256,
                num_heads=8,
                mlp_dim=512,
+               mlp_activation='gelu',
                num_layers=1,
                dropout_rate=0.1,
                name='directional_context_transformer'):
@@ -112,6 +127,7 @@ class DirectionalContextTransformer(keras.Model):
     self.head_dim = hidden_size // num_heads
     self.num_layers = num_layers
     self.dropout_rate = dropout_rate
+    self.mlp_activation = mlp_activation
 
     self.input_projection = keras.layers.Dense(hidden_size)
     self.context_projection = keras.layers.Dense(3)
@@ -127,6 +143,7 @@ class DirectionalContextTransformer(keras.Model):
           head_dim=self.head_dim,
           mlp_dim=mlp_dim,
           dropout_rate=dropout_rate,
+          mlp_activation=mlp_activation,
           name=f'transformer_block_{i}')
       self.transformer_blocks.append(block)
     self.output_projection = keras.layers.Dense(3)
@@ -184,8 +201,10 @@ class DirectionalContextTransformer(keras.Model):
       if param_count is not None:
         logging.info(
             'Directional transformer active in %s mode with %d trainable '
-            'parameters.', mode, param_count)
+            'parameters using %s MLP activation.', mode, param_count,
+            self.mlp_activation)
       else:
-        logging.info('Directional transformer active in %s mode.', mode)
+        logging.info('Directional transformer active in %s mode using %s MLP '
+                     'activation.', mode, self.mlp_activation)
       self._usage_logged = True
     return outputs
