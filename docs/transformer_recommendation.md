@@ -14,7 +14,7 @@
    - Apply a lightweight two-layer Transformer encoder with:
      - Hidden size 128, 4 attention heads, rotary positional encoding over the token index (simple learned embeddings suffice since sequence length is tiny).
      - Pre-normalization residual layout (LayerNorm → MultiHeadSelfAttention → residual, LayerNorm → MLP → residual) for stability.
-     - Feed-forward network dimension 256 with GELU activation.
+    - Feed-forward network dimension 256 with ReLU activation (baseline-friendly).
    - Implement attention via `tf.keras.layers.MultiHeadAttention` (available through `tensorflow.compat.v1.keras.layers` in TF ≥2.4 even under v1 compatibility) or a custom projection if running on older releases.
 4. **Projection back to directions**:
    - Discard the context token and pass each of the four updated tokens through a shared linear projection to 3D.
