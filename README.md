@@ -127,11 +127,12 @@ python -u train.py \
   --batch 2
 ```
 
-> **Note on activations:** The directional transformer now uses a local GELU
-> approximation to stay compatible with TensorFlow environments that do not
-> expose `tf.nn.gelu` or `keras.activations.gelu`. No additional configuration
-> is required; the fallback is applied automatically during training and
-> evaluation.
+> **Note on activations:** The directional transformer prefers the exact
+> `keras.activations.gelu` (or `tf.nn.gelu` when available) and will
+> automatically fall back to a local GELU approximation only if neither builtin
+> activation is exposed by the TensorFlow environment. No additional
+> configuration is required; the best available option is selected during
+> training and evaluation.
 
 ### Evaluation DirectionNet-R
 ```bash
