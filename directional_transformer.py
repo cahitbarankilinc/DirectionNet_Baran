@@ -1,17 +1,23 @@
 # coding=utf-8
 """Directional transformer module for contextualizing DirectionNet outputs."""
 
-import math
-
 from absl import logging
 import tensorflow.compat.v1 as tf
 from tensorflow.compat.v1 import keras
 
 
-def _approximate_gelu(x):
-  """TF1-friendly GELU approximation used when keras.activations.gelu is absent."""
-  coeff = tf.cast(tf.sqrt(tf.constant(2.0 / math.pi, dtype=tf.float32)), x.dtype)
-  return 0.5 * x * (1.0 + tf.tanh(coeff * (x + 0.044715 * tf.pow(x, 3))))
+def _silu(x):
+  """TF1-friendly SiLU (Swish) activation with graceful fallbacks."""
+  silu = getattr(tf.nn, 'silu', None)
+  if silu is not None:
+    return silu(x)
+
+  swish = getattr(tf.nn, 'swish', None)
+  if swish is not None:
+    return swish(x)
+
+  # Explicit sigmoid-based fallback for TF builds without swish/silu kernels.
+  return x * tf.nn.sigmoid(x)
 
 
 class LayerNormalization(keras.layers.Layer):
@@ -58,10 +64,9 @@ class _TransformerBlock(keras.layers.Layer):
     self.attention_output = keras.layers.Dense(hidden_size, use_bias=False)
     self.attention_dropout = keras.layers.Dropout(dropout_rate)
     self.attention_output_dropout = keras.layers.Dropout(dropout_rate)
-    # TF1-compat mode may not expose tf.nn.gelu or keras.activations.gelu; use a
-    # local approximation to retain the intended nonlinearity consistently.
     self.norm2 = LayerNormalization()
-    self.mlp_dense1 = keras.layers.Dense(mlp_dim, activation=_approximate_gelu)
+    # Use SiLU/Swish for smoother gradients with TF1-friendly fallbacks.
+    self.mlp_dense1 = keras.layers.Dense(mlp_dim, activation=_silu)
     self.mlp_dropout1 = keras.layers.Dropout(dropout_rate)
     self.mlp_dense2 = keras.layers.Dense(hidden_size)
     self.mlp_dropout2 = keras.layers.Dropout(dropout_rate)

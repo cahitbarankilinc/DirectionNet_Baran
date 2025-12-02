@@ -127,11 +127,10 @@ python -u train.py \
   --batch 2
 ```
 
-> **Note on activations:** The directional transformer now uses a local GELU
-> approximation to stay compatible with TensorFlow environments that do not
-> expose `tf.nn.gelu` or `keras.activations.gelu`. No additional configuration
-> is required; the fallback is applied automatically during training and
-> evaluation.
+> **Note on activations:** The directional transformer now uses SiLU/Swish with
+> fallbacks for TensorFlow builds that lack `tf.nn.silu`/`tf.nn.swish`. The
+> sigmoid-based implementation is applied automatically during training and
+> evaluation, so no additional configuration is required.
 
 ### Evaluation DirectionNet-R
 ```bash
