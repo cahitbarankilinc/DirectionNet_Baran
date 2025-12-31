@@ -16,6 +16,8 @@
 """Utilities for math and geometry operations."""
 import math
 import pickle
+
+from absl import logging
 from pano_utils import geometry
 from pano_utils import math_utils
 from pano_utils import transformation
@@ -23,6 +25,9 @@ import tensorflow.compat.v1 as tf
 from tensorflow_graphics.geometry.transformation import axis_angle
 from tensorflow_graphics.geometry.transformation import rotation_matrix_3d
 import tensorflow_probability as tfp
+
+
+_TRANSFORMER_DISABLED_LOGGED = False
 
 
 def read_pickle(file):
@@ -280,12 +285,50 @@ def half_rotation(rotation):
   return rotation_matrix_3d.from_axis_angle(axes, angles/2)
 
 
-def distributions_to_directions(x):
-  """Convert spherical distributions from the DirectionNet to directions."""
+def distributions_to_directions(x,
+                                transformer=None,
+                                context_embedding=None,
+                                training=False):
+  """Convert spherical distributions from the DirectionNet to directions.
+
+  Args:
+    x: [BATCH, HEIGHT, WIDTH, CHANNELS] spherical distributions.
+    transformer: Optional DirectionalContextTransformer instance.
+    context_embedding: Optional [BATCH, 1024] encoder embedding used when the
+      transformer is enabled.
+    training: Whether the transformer should run in training mode.
+
+  Returns:
+    A tuple of (directions, expectation, distribution_pred) where directions are
+    unit-normalized vectors potentially refined by the transformer, expectation
+    are the raw expectation vectors prior to normalization, and distribution
+    is the area-normalized spherical probability map.
+  """
   distribution_pred = spherical_normalization(x)
   expectation = spherical_expectation(distribution_pred)
+  expectation.set_shape([None, x.shape[-1], 3])
   expectation_normalized = tf.nn.l2_normalize(expectation, axis=-1)
-  return expectation_normalized, expectation, distribution_pred
+
+  refined = expectation_normalized
+  if transformer is not None:
+    channels = expectation.shape.as_list()[1]
+    if channels not in (3, 4):
+      raise ValueError(
+          'Directional transformer supports 3 or 4 expectation vectors, '
+          'got %s.' % channels)
+    if context_embedding is None:
+      raise ValueError(
+          'context_embedding must be provided when using the transformer.')
+    refined = transformer(
+        expectation, context_embedding, training=training)
+  else:
+    global _TRANSFORMER_DISABLED_LOGGED
+    if not _TRANSFORMER_DISABLED_LOGGED:
+      logging.info(
+          'Directional transformer disabled; falling back to normalized '
+          'expectation vectors without contextual refinement.')
+      _TRANSFORMER_DISABLED_LOGGED = True
+  return refined, expectation, distribution_pred
 
 
 def derotation(src_img,

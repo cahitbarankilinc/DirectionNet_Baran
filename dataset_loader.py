@@ -109,7 +109,9 @@ def data_loader(
     # 1) Dosya glob’unu açıkça topla (log için de kullanacağız)
     file_pattern = os.path.join(data_path, '*')
     files = tf.gfile.Glob(file_pattern)
-    tf.logging.info("DATA GLOB -> %s  |  %d path bulundu", file_pattern, len(files))
+    # Gizli dosyaları (.DS_Store gibi) ve klasör olmayan öğeleri filtrele
+    files = [p for p in files if os.path.isdir(p) and not p.endswith('.DS_Store')]
+    tf.logging.info("DATA GLOB -> %s  |  %d path gefunden", file_pattern, len(files))
 
     ds = tf.data.Dataset.from_tensor_slices(files)
 

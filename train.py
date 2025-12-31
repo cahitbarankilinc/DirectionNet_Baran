@@ -22,6 +22,7 @@ import time
 from absl import app
 from absl import flags
 import dataset_loader
+import directional_transformer
 import losses
 import model
 import tensorflow.compat.v1 as tf
@@ -61,6 +62,12 @@ flags.DEFINE_integer(
     'transformed_width', 344,
     'The width dimension of input images after derotation transformation.')
 flags.DEFINE_float('lr', 1e-3, 'The learning rate.')
+flags.DEFINE_float(
+    'transformer_lr', 1e-4,
+    'Optional learning rate override for transformer parameters when enabled.')
+flags.DEFINE_bool(
+    'freeze_backbone', False,
+    'Freeze DirectionNet weights when fine-tuning the transformer module.')
 flags.DEFINE_float('alpha', 1e2,
                    'The weight of the distribution loss.')
 flags.DEFINE_float('beta', 0.1,
@@ -72,9 +79,73 @@ flags.DEFINE_float(
     'The field of view of input images after derotation transformation.')
 flags.DEFINE_bool('derotate_both', True,
                   'Derotate both input images when training DirectionNet-T')
+flags.DEFINE_bool(
+    'enable_directional_transformer', True,
+    'Enable contextual transformer refinement of (v_x, v_y, v_z, t).')
 
 Computation = collections.namedtuple('Computation',
                                      ['train_op', 'loss', 'global_step'])
+
+
+def _build_train_op(loss, global_step, net, transformer=None):
+  """Create a train op with optional transformer-specific optimization."""
+  base_optimizer = tf.train.GradientDescentOptimizer(FLAGS.lr)
+  base_vars = list(net.trainable_variables)
+
+  transformer_vars = []
+  if transformer is not None:
+    transformer_vars = list(transformer.trainable_variables)
+    if FLAGS.freeze_backbone:
+      base_vars = []
+
+  train_vars = base_vars + transformer_vars
+  if not train_vars:
+    raise ValueError('No variables selected for optimization. Disable '
+                     '`freeze_backbone` or enable the transformer.')
+
+  grads = tf.gradients(loss, train_vars)
+  grads_and_vars = [(grad, var)
+                    for grad, var in zip(grads, train_vars)
+                    if grad is not None]
+
+  if not grads_and_vars:
+    raise ValueError('No gradients available for the selected variables.')
+
+  train_ops = []
+  global_step_consumed = False
+
+  base_grads_and_vars = [
+      (grad, var) for grad, var in grads_and_vars if var in base_vars
+  ]
+  if base_grads_and_vars:
+    train_ops.append(
+        base_optimizer.apply_gradients(
+            base_grads_and_vars, global_step=global_step))
+    global_step_consumed = True
+
+  transformer_grads_and_vars = [
+      (grad, var) for grad, var in grads_and_vars if var in transformer_vars
+  ]
+  if transformer_grads_and_vars:
+    if FLAGS.transformer_lr > 0.0:
+      transformer_optimizer = tf.train.GradientDescentOptimizer(
+          FLAGS.transformer_lr)
+    else:
+      transformer_optimizer = base_optimizer
+    step = None if global_step_consumed else global_step
+    train_ops.append(
+        transformer_optimizer.apply_gradients(
+            transformer_grads_and_vars, global_step=step))
+    global_step_consumed = True
+
+  if not train_ops:
+    raise ValueError('No optimization ops were created. Check flag settings.')
+
+  update_ops = list(net.updates)
+  if transformer is not None:
+    update_ops.extend(getattr(transformer, 'updates', []))
+
+  return tf.group(*(train_ops + update_ops))
 
 
 def direction_net_rotation(src_img,
@@ -101,6 +172,9 @@ def direction_net_rotation(src_img,
     raise ValueError("'n_output_distributions' must be either 2 or 3.")
 
   net = model.DirectionNet(n_output_distributions)
+  transformer = None
+  if FLAGS.enable_directional_transformer and n_output_distributions == 3:
+    transformer = directional_transformer.DirectionalContextTransformer()
   global_step = tf.train.get_or_create_global_step()
   directions_gt = rotation_gt[:, :n_output_distributions]
   distribution_gt = util.spherical_normalization(util.von_mises_fisher(
@@ -108,9 +182,12 @@ def direction_net_rotation(src_img,
       tf.constant(FLAGS.kappa, tf.float32),
       [FLAGS.distribution_height, FLAGS.distribution_width]), rectify=False)
 
-  pred = net(src_img, trt_img, training=True)
+  pred, context_embedding = net(src_img, trt_img, training=True)
   directions, expectation, distribution_pred = util.distributions_to_directions(
-      pred)
+      pred,
+      transformer=transformer,
+      context_embedding=context_embedding,
+      training=True)
   if n_output_distributions == 3:
     rotation_estimated = util.svd_orthogonalize(directions)
   elif n_output_distributions == 2:
@@ -150,11 +227,8 @@ def direction_net_rotation(src_img,
   tf.summary.image('source_image', src_img, max_outputs=4)
   tf.summary.image('target_image', trt_img, max_outputs=4)
 
-  optimizer = tf.train.GradientDescentOptimizer(FLAGS.lr)
-  train_op = optimizer.minimize(
-      loss, global_step=global_step, name='train')
-  update_op = net.updates
-  return Computation(tf.group([train_op, update_op]), loss, global_step)
+  train_op = _build_train_op(loss, global_step, net, transformer)
+  return Computation(train_op, loss, global_step)
 
 
 def direction_net_translation(src_img,
@@ -181,6 +255,7 @@ def direction_net_translation(src_img,
     A collection of tensors including training ops, loss, and global step count.
   """
   net = model.DirectionNet(1)
+  transformer = None
   global_step = tf.train.get_or_create_global_step()
   perturbed_rotation = tf.cond(
       tf.less(tf.random_uniform([], 0, 1.0), 0.5),
@@ -215,9 +290,12 @@ def direction_net_translation(src_img,
       tf.constant(FLAGS.kappa, tf.float32),
       [FLAGS.distribution_height, FLAGS.distribution_width]), rectify=False)
 
-  pred = net(transformed_src, transformed_trt, training=True)
+  pred, context_embedding = net(transformed_src, transformed_trt, training=True)
   directions, expectation, distribution_pred = util.distributions_to_directions(
-      pred)
+      pred,
+      transformer=transformer,
+      context_embedding=context_embedding,
+      training=True)
 
   direction_loss = losses.direction_loss(directions, translation_gt)
   distribution_loss = tf.constant(
@@ -252,11 +330,8 @@ def direction_net_translation(src_img,
   tf.summary.image(
       'transformed_target_image_gt', transformed_trt_gt, max_outputs=4)
 
-  optimizer = tf.train.GradientDescentOptimizer(FLAGS.lr)
-  train_op = optimizer.minimize(
-      loss, global_step=global_step, name='train')
-  update_op = net.updates
-  return Computation(tf.group([train_op, update_op]), loss, global_step)
+  train_op = _build_train_op(loss, global_step, net, transformer)
+  return Computation(train_op, loss, global_step)
 
 
 def direction_net_single(src_img, trt_img, rotation_gt, translation_gt):
@@ -272,6 +347,9 @@ def direction_net_single(src_img, trt_img, rotation_gt, translation_gt):
     A collection of tensors including training ops, loss, and global step count.
   """
   net = model.DirectionNet(4)
+  transformer = None
+  if FLAGS.enable_directional_transformer:
+    transformer = directional_transformer.DirectionalContextTransformer()
   global_step = tf.train.get_or_create_global_step()
   directions_gt = tf.concat([rotation_gt, translation_gt], 1)
   distribution_gt = util.spherical_normalization(util.von_mises_fisher(
@@ -279,9 +357,12 @@ def direction_net_single(src_img, trt_img, rotation_gt, translation_gt):
       tf.constant(FLAGS.kappa, tf.float32),
       [FLAGS.distribution_height, FLAGS.distribution_width]), rectify=False)
 
-  pred = net(src_img, trt_img, training=True)
+  pred, context_embedding = net(src_img, trt_img, training=True)
   directions, expectation, distribution_pred = util.distributions_to_directions(
-      pred)
+      pred,
+      transformer=transformer,
+      context_embedding=context_embedding,
+      training=True)
   rotation_estimated = util.svd_orthogonalize(
       directions[:, :3])
 
@@ -329,11 +410,8 @@ def direction_net_single(src_img, trt_img, rotation_gt, translation_gt):
   tf.summary.image('source_image', src_img, max_outputs=4)
   tf.summary.image('target_image', trt_img, max_outputs=4)
 
-  optimizer = tf.train.GradientDescentOptimizer(FLAGS.lr)
-  train_op = optimizer.minimize(
-      loss, global_step=global_step, name='train')
-  update_op = net.updates
-  return Computation(tf.group([train_op, update_op]), loss, global_step)
+  train_op = _build_train_op(loss, global_step, net, transformer)
+  return Computation(train_op, loss, global_step)
 
 
 class TimingHook(tf.train.SessionRunHook):
