@@ -1,22 +1,97 @@
-# 1)DirectionNet Installation Guide (For MacOS)
+# DirectionNet Linux Kurulum Kılavuzu
 
-First, clone the repository to your local computer:
+Bu doküman, Python yüklü olmayan sıfırdan bir Linux kurulumunda DirectionNet'i çalıştırmak için gerekli adımları içerir. Yalnızca Linux için hazırlanmıştır.
+
+## 1) Sistem Bağımlılıkları (Python yokken)
+
+Aşağıdaki komutlar Debian/Ubuntu tabanlı dağıtımlar içindir. Farklı bir dağıtım kullanıyorsanız eşdeğer paketleri kurun.
+
+```bash
+sudo apt update
+sudo apt install -y git curl ca-certificates build-essential
+```
+
+## 2) Miniforge (Conda) Kurulumu
+
+Python yüklü olmadığı için Miniforge ile izole bir ortam oluşturacağız.
+
+```bash
+curl -L -o Miniforge3-Linux-x86_64.sh \
+  https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh
+bash Miniforge3-Linux-x86_64.sh -b -p "$HOME/miniforge"
+```
+
+Conda'yı etkinleştirmek için shell başlatma dosyanızı güncelleyin:
+
+```bash
+"$HOME/miniforge/bin/conda" init bash
+exec bash
+```
+
+Kurulumu doğrulayın:
+
+```bash
+which conda
+conda info | egrep "platform|arch|base environment"
+```
+
+Beklenen örnek çıktı:
+
+```bash
+platform: linux-64
+arch: x86_64
+base environment: .../miniforge
+```
+
+> **Not:** ARM tabanlı Linux (aarch64) kullanıyorsanız `Miniforge3-Linux-aarch64.sh` indirin.
+
+## 3) Projeyi İndirme
 
 ```bash
 git clone git@github.com:cahitbarankilinc/DirectionNet_Setup_For_MacOS.git
+cd DirectionNet_Setup_For_MacOS
 ```
-The Python files in this repository are set up to work on MacOS operating systems.
 
-<br><br>
+## 4) Conda Ortamı Oluşturma
 
-# 2)Downloading the Datasets
+```bash
+conda create -n directionnet_baran python=3.11 -y
+conda activate directionnet_baran
+```
 
-After setting up the repository locally, download the following two datasets:
+## 5) TensorFlow ve Bağımlılıkların Kurulumu
+
+Önce olası eski paketleri temizleyin ve pip'i güncelleyin:
+
+```bash
+python -m pip uninstall -y tensorflow tensorflow-macos tensorflow-intel || true
+python -m pip cache purge
+python -m pip install -U pip
+```
+
+Linux için önerilen paketler:
+
+```bash
+python -m pip install "tensorflow==2.15.0"
+python -m pip install "keras==2.15.0"
+python -m pip install "tensorflow-probability==0.23.0"
+python -m pip install "tf-slim==1.1.0" "tensorflow-graphics"
+```
+
+Kurulumu test edin:
+
+```bash
+python -c "import tensorflow as tf, platform, sys; print('Arch:', platform.machine()); print('TF:', tf.__version__); print('GPU:', tf.config.list_physical_devices('GPU')); print('PY:', sys.executable)"
+```
+
+## 6) Veri Setlerini İndirme
+
+Aşağıdaki iki veri setini indirin:
 
 - [**MatterportA test data**](https://drive.google.com/file/d/1be75Ys8vi1o7eeS_Rf0SuJxlTkDJNisZ/view?usp=sharing)
 - [**MatterportB test data**](https://drive.google.com/file/d/1PcyD_8TZOOKh6G8B8eUHQrOUEOMrMx_F/view?usp=sharing)
 
-These datasets will be downloaded as `.zip` files. Extract the zip files and place them in the `/data` folder of the repository as shown below:
+`.zip` dosyalarını çıkarın ve aşağıdaki gibi `/data` klasörüne yerleştirin:
 
 ```bash
 ├ train.py
@@ -35,90 +110,10 @@ These datasets will be downloaded as `.zip` files. Extract the zip files and pla
 │   ├ test_meta/
 ```
 
-<br><br>
+## 7) Eğitim ve Değerlendirme
 
-# 3Installation Steps
+### DirectionNet-R Eğitimi
 
-## 1️⃣ Arm64 Miniforge Installation
-
-Before setting up the repository, create a new folder (do **not** clone the repo yet). Then follow these steps in order:
-
-### Download & Install Miniforge:
-```bash
-curl -L -o Miniforge3-MacOSX-arm64.sh \
-https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-MacOSX-arm64.sh
-bash Miniforge3-MacOSX-arm64.sh -b -p "$HOME/miniforge_arm"
-```
-### For Conda init (arm):
-```bash
-"$HOME/miniforge_arm/bin/conda" init zsh
-exec zsh
-```
-
-
-## 2️⃣ Verification
-
-After completing the installation, close and reopen the terminal. Navigate to the directory you created for the repository and verify with the following commands:
-```bash
-which conda
-conda info | egrep "platform|arch|base environment"
-```
-### Expected results:
-```bash
-platform: osx-arm64
-arch: arm64
-base environment: .../miniforge_arm
-```
-
-
-## 3️⃣ Creating Environment
-```bash
-conda create -n directionnet_baran python=3.11 -y
-conda activate directionnet_baran
-```
-
-
-
-## 4️⃣ Installing TensorFlow and Libraries
-First, remove any old TensorFlow versions:
-```bash
-python -m pip uninstall -y tensorflow tensorflow-macos tensorflow-intel || true
-python -m pip cache purge
-python -m pip install -U pip
-```
-
-### Install the correct packages for Apple Silicon:
-```bash
-python -m pip install "tensorflow==2.15.0"
-python -m pip install tensorflow-metal
-python -m pip install "keras==2.15.0"
-python -m pip install "tensorflow-probability==0.23.0"
-python -m pip install "tf-slim==1.1.0" "tensorflow-graphics"
-```
-
-### Test it:
-```bash
-python -c "import tensorflow as tf, platform, sys; print('Arch:', platform.machine()); print('TF:', tf.__version__); print('GPU:', tf.config.list_physical_devices('GPU')); print('PY:', sys.executable)"
-
-```
-### Expected results:
-```bash
-Arch: arm64
-TF: 2.15.0 (or 2.1x)
-GPU:  <Apple Metal in list>
-PY:  /Users/<username>/miniforge_arm/
-```
-
-
-
-<br><br>
-
-
-
-# 🚀 Model Training
-
-You can now start training the model. Below are example commands to run the training:
-### Train DirectionNet-R
 ```bash
 python -u train.py \
   --checkpoint_dir checkpoints/R \
@@ -127,13 +122,10 @@ python -u train.py \
   --batch 2
 ```
 
-> **Note on activations:** The directional transformer now uses a local GELU
-> approximation to stay compatible with TensorFlow environments that do not
-> expose `tf.nn.gelu` or `keras.activations.gelu`. No additional configuration
-> is required; the fallback is applied automatically during training and
-> evaluation.
+> **Not:** Directional transformer, `tf.nn.gelu` veya `keras.activations.gelu` bulunmayan TensorFlow kurulumlarında uyumluluk için yerel bir GELU yaklaşımı kullanır. Ek yapılandırma gerektirmez.
 
-### Evaluation DirectionNet-R
+### DirectionNet-R Değerlendirme
+
 ```bash
 python eval.py \
   --checkpoint_dir checkpoints/R \
@@ -144,9 +136,6 @@ python eval.py \
   --model 9D
 ```
 
+## Daha Fazlası
 
-
-<br><br>
-
-# For More: 
-- [**Original Source**](https://github.com/arthurchen0518/DirectionNet?tab=readme-ov-file)
+- [**Orijinal Kaynak**](https://github.com/arthurchen0518/DirectionNet?tab=readme-ov-file)
