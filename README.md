@@ -1,24 +1,70 @@
-# 1)DirectionNet Installation Guide (For MacOS)
+# DirectionNet Windows Kurulum Kılavuzu
 
-First, clone the repository to your local computer:
+Bu kılavuz, Python kurulu olmayan sıfır Windows makinede DirectionNet'i çalıştırmak için gereken tüm adımları içerir. Yalnızca Windows içindir.
 
-```bash
-git clone git@github.com:cahitbarankilinc/DirectionNet_Setup_For_MacOS.git
+## 1) Gerekli Araçlar
+
+### 1.1 Git Kurulumu
+1. [Git for Windows](https://git-scm.com/download/win) indirin ve kurun.
+2. Kurulum sırasında varsayılan seçenekleri kullanabilirsiniz.
+
+### 1.2 Miniforge (Conda) Kurulumu
+1. [Miniforge3 Windows (x86_64)](https://github.com/conda-forge/miniforge/releases/latest) dosyasını indirin. Dosya adı genelde `Miniforge3-Windows-x86_64.exe` şeklindedir.
+2. Kurulumda **"Add Miniforge3 to PATH"** seçeneğini işaretleyin.
+3. Kurulum bittikten sonra **PowerShell** açın.
+
+### 1.3 Kurulum Doğrulama
+PowerShell'de aşağıdaki komutları çalıştırın:
+```powershell
+conda --version
 ```
-The Python files in this repository are set up to work on MacOS operating systems.
+Çıktıda conda sürümü görünmelidir.
 
-<br><br>
+## 2) Projeyi Klonlama
+PowerShell'de aşağıdaki komutları çalıştırın:
+```powershell
+git clone https://github.com/cahitbarankilinc/DirectionNet_Setup_For_MacOS.git DirectionNet_Baran
+cd DirectionNet_Baran
+```
 
-# 2)Downloading the Datasets
+> Not: Depo adı MacOS olarak görünse de kod Windows'ta da çalışacak şekilde kurulabilir.
 
-After setting up the repository locally, download the following two datasets:
+## 3) Python Ortamını Oluşturma
+```powershell
+conda create -n directionnet_baran python=3.11 -y
+conda activate directionnet_baran
+```
+
+## 4) Gerekli Kütüphaneleri Kurma
+Önce pip'i güncelleyin:
+```powershell
+python -m pip install --upgrade pip
+```
+
+Ardından TensorFlow ve bağımlılıkları kurun:
+```powershell
+python -m pip install "tensorflow==2.15.0"
+python -m pip install "keras==2.15.0"
+python -m pip install "tensorflow-probability==0.23.0"
+python -m pip install "tf-slim==1.1.0" "tensorflow-graphics"
+```
+
+Kurulumu test etmek için:
+```powershell
+python -c "import tensorflow as tf; print('TF:', tf.__version__); print('GPU:', tf.config.list_physical_devices('GPU'))"
+```
+
+> Windows üzerinde GPU desteği farklılık gösterebilir. GPU görünmüyorsa CPU ile çalışır.
+
+## 5) Dataset İndirme
+Aşağıdaki iki dataset'i indirip `data` klasörüne çıkarın:
 
 - [**MatterportA test data**](https://drive.google.com/file/d/1be75Ys8vi1o7eeS_Rf0SuJxlTkDJNisZ/view?usp=sharing)
 - [**MatterportB test data**](https://drive.google.com/file/d/1PcyD_8TZOOKh6G8B8eUHQrOUEOMrMx_F/view?usp=sharing)
 
-These datasets will be downloaded as `.zip` files. Extract the zip files and place them in the `/data` folder of the repository as shown below:
-
-```bash
+Klasör yapısı aşağıdaki gibi olmalıdır:
+```
+DirectionNet_Baran/
 ├ train.py
 ├ eval.py
 ├ dataset/
@@ -35,118 +81,28 @@ These datasets will be downloaded as `.zip` files. Extract the zip files and pla
 │   ├ test_meta/
 ```
 
-<br><br>
-
-# 3Installation Steps
-
-## 1️⃣ Arm64 Miniforge Installation
-
-Before setting up the repository, create a new folder (do **not** clone the repo yet). Then follow these steps in order:
-
-### Download & Install Miniforge:
-```bash
-curl -L -o Miniforge3-MacOSX-arm64.sh \
-https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-MacOSX-arm64.sh
-bash Miniforge3-MacOSX-arm64.sh -b -p "$HOME/miniforge_arm"
-```
-### For Conda init (arm):
-```bash
-"$HOME/miniforge_arm/bin/conda" init zsh
-exec zsh
-```
-
-
-## 2️⃣ Verification
-
-After completing the installation, close and reopen the terminal. Navigate to the directory you created for the repository and verify with the following commands:
-```bash
-which conda
-conda info | egrep "platform|arch|base environment"
-```
-### Expected results:
-```bash
-platform: osx-arm64
-arch: arm64
-base environment: .../miniforge_arm
-```
-
-
-## 3️⃣ Creating Environment
-```bash
-conda create -n directionnet_baran python=3.11 -y
-conda activate directionnet_baran
-```
-
-
-
-## 4️⃣ Installing TensorFlow and Libraries
-First, remove any old TensorFlow versions:
-```bash
-python -m pip uninstall -y tensorflow tensorflow-macos tensorflow-intel || true
-python -m pip cache purge
-python -m pip install -U pip
-```
-
-### Install the correct packages for Apple Silicon:
-```bash
-python -m pip install "tensorflow==2.15.0"
-python -m pip install tensorflow-metal
-python -m pip install "keras==2.15.0"
-python -m pip install "tensorflow-probability==0.23.0"
-python -m pip install "tf-slim==1.1.0" "tensorflow-graphics"
-```
-
-### Test it:
-```bash
-python -c "import tensorflow as tf, platform, sys; print('Arch:', platform.machine()); print('TF:', tf.__version__); print('GPU:', tf.config.list_physical_devices('GPU')); print('PY:', sys.executable)"
-
-```
-### Expected results:
-```bash
-Arch: arm64
-TF: 2.15.0 (or 2.1x)
-GPU:  <Apple Metal in list>
-PY:  /Users/<username>/miniforge_arm/
-```
-
-
-
-<br><br>
-
-
-
-# 🚀 Model Training
-
-You can now start training the model. Below are example commands to run the training:
-### Train DirectionNet-R
-```bash
-python -u train.py \
-  --checkpoint_dir checkpoints/R \
-  --data_dir data/MatterportA/test \
-  --model 9D \
+## 6) Model Eğitimi
+DirectionNet-R eğitimi için örnek komut:
+```powershell
+python -u train.py `
+  --checkpoint_dir checkpoints/R `
+  --data_dir data/MatterportA/test `
+  --model 9D `
   --batch 2
 ```
 
-> **Note on activations:** The directional transformer now uses a local GELU
-> approximation to stay compatible with TensorFlow environments that do not
-> expose `tf.nn.gelu` or `keras.activations.gelu`. No additional configuration
-> is required; the fallback is applied automatically during training and
-> evaluation.
+> **Not:** Directional transformer, `tf.nn.gelu` veya `keras.activations.gelu` bulunmayan ortamlarda otomatik olarak yerel GELU yaklaşımını kullanır.
 
-### Evaluation DirectionNet-R
-```bash
-python eval.py \
-  --checkpoint_dir checkpoints/R \
-  --eval_data_dir data/MatterportA \
-  --save_summary_dir logs/eval_R \
-  --testset_size 1000 \
-  --batch 8 \
+## 7) Değerlendirme
+```powershell
+python eval.py `
+  --checkpoint_dir checkpoints/R `
+  --eval_data_dir data/MatterportA `
+  --save_summary_dir logs/eval_R `
+  --testset_size 1000 `
+  --batch 8 `
   --model 9D
 ```
 
-
-
-<br><br>
-
-# For More: 
+## 8) Kaynak
 - [**Original Source**](https://github.com/arthurchen0518/DirectionNet?tab=readme-ov-file)
