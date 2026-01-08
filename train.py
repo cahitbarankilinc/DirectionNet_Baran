@@ -68,6 +68,21 @@ flags.DEFINE_float(
 flags.DEFINE_bool(
     'freeze_backbone', False,
     'Freeze DirectionNet weights when fine-tuning the transformer module.')
+flags.DEFINE_integer(
+    'transformer_hidden_size', 1024,
+    'Hidden size for the directional context transformer.')
+flags.DEFINE_integer(
+    'transformer_num_heads', 16,
+    'Attention heads for the directional context transformer.')
+flags.DEFINE_integer(
+    'transformer_mlp_dim', 4096,
+    'MLP dimension for the directional context transformer.')
+flags.DEFINE_integer(
+    'transformer_num_layers', 8,
+    'Number of transformer layers for contextual refinement.')
+flags.DEFINE_float(
+    'transformer_dropout', 0.1,
+    'Dropout rate for the directional context transformer.')
 flags.DEFINE_float('alpha', 1e2,
                    'The weight of the distribution loss.')
 flags.DEFINE_float('beta', 0.1,
@@ -148,6 +163,16 @@ def _build_train_op(loss, global_step, net, transformer=None):
   return tf.group(*(train_ops + update_ops))
 
 
+def _build_transformer():
+  """Create the configured directional context transformer."""
+  return directional_transformer.DirectionalContextTransformer(
+      hidden_size=FLAGS.transformer_hidden_size,
+      num_heads=FLAGS.transformer_num_heads,
+      mlp_dim=FLAGS.transformer_mlp_dim,
+      num_layers=FLAGS.transformer_num_layers,
+      dropout_rate=FLAGS.transformer_dropout)
+
+
 def direction_net_rotation(src_img,
                            trt_img,
                            rotation_gt,
@@ -174,7 +199,7 @@ def direction_net_rotation(src_img,
   net = model.DirectionNet(n_output_distributions)
   transformer = None
   if FLAGS.enable_directional_transformer and n_output_distributions == 3:
-    transformer = directional_transformer.DirectionalContextTransformer()
+    transformer = _build_transformer()
   global_step = tf.train.get_or_create_global_step()
   directions_gt = rotation_gt[:, :n_output_distributions]
   distribution_gt = util.spherical_normalization(util.von_mises_fisher(
@@ -349,7 +374,7 @@ def direction_net_single(src_img, trt_img, rotation_gt, translation_gt):
   net = model.DirectionNet(4)
   transformer = None
   if FLAGS.enable_directional_transformer:
-    transformer = directional_transformer.DirectionalContextTransformer()
+    transformer = _build_transformer()
   global_step = tf.train.get_or_create_global_step()
   directions_gt = tf.concat([rotation_gt, translation_gt], 1)
   distribution_gt = util.spherical_normalization(util.von_mises_fisher(

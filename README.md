@@ -91,6 +91,27 @@ python -u train.py `
   --batch 2
 ```
 
+### 6.1 Directional Transformer Kullanımı ve Güçlendirme
+- Directional transformer **yalnızca** `--model 9D` ve `--model Single` seçimlerinde aktiftir.
+- `--model 6D` ve `--model T` eğitimlerinde transformer kullanılmaz (flag açık olsa bile).
+
+Aşağıdaki bayraklarla transformer boyutunu büyütebilirsiniz:
+```powershell
+python -u train.py `
+  --checkpoint_dir checkpoints/R `
+  --data_dir data/MatterportA/test `
+  --model 9D `
+  --enable_directional_transformer True `
+  --transformer_hidden_size 1024 `
+  --transformer_num_heads 16 `
+  --transformer_mlp_dim 4096 `
+  --transformer_num_layers 8 `
+  --transformer_dropout 0.1 `
+  --batch 2
+```
+
+> Not: Bu ayarlar çok daha büyük GPU bellek ihtiyacı yaratır. `transformer_*` bayrakları ile daha küçük veya daha büyük modeller kurabilirsiniz.
+
 > **Not:** Directional transformer, `tf.nn.gelu` veya `keras.activations.gelu` bulunmayan ortamlarda otomatik olarak yerel GELU yaklaşımını kullanır.
 
 ## 7) Değerlendirme
