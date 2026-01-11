@@ -24,6 +24,8 @@ from tensorflow.compat.v1.keras.layers import GlobalAveragePooling2D
 from tensorflow.compat.v1.keras.layers import LeakyReLU
 from tensorflow.compat.v1.keras.layers import UpSampling2D
 from tensorflow.compat.v1.keras.models import Sequential
+import directional_transformer
+import util
 
 
 class BottleneckResidualUnit(keras.Model):
@@ -105,16 +107,27 @@ class BottleneckResidualUnit(keras.Model):
 class DirectionNet(keras.Model):
   """DirectionNet generates spherical probability distributions from images."""
 
-  def __init__(self, n_out, regularization=0.01):
+  def __init__(self,
+               n_out,
+               regularization=0.01,
+               use_transformer=False,
+               transformer_dim=64,
+               context_grid=4):
     """Initialize the DirectionNet.
 
     Args:
       n_out: (int) the number of output distributions.
       regularization: L2 regularization factor for layer weights.
+      use_transformer: (bool) enable cross-attention context transformer.
+      transformer_dim: (int) hidden size for transformer projections.
+      context_grid: (int) spatial grid size for context token pooling.
     """
     super(DirectionNet, self).__init__()
     self.encoder = SiameseEncoder()
     self.inplanes = self.encoder.inplanes
+    self.use_transformer = use_transformer
+    self.transformer_dim = transformer_dim
+    self.context_grid = context_grid
     self.decoder_block1 = Sequential([
         Conv2D(256,
                3,
@@ -165,6 +178,15 @@ class DirectionNet(keras.Model):
         LeakyReLU()])
     self.down_channel = Conv2D(
         n_out, 1, kernel_regularizer=regularizers.l2(regularization))
+    if self.use_transformer:
+      self.context_projection = Conv2D(
+          transformer_dim,
+          1,
+          use_bias=False,
+          kernel_regularizer=regularizers.l2(regularization))
+      self.context_transformer = (
+          directional_transformer.DirectionalContextTransformer(
+              hidden_dim=transformer_dim))
 
   def _make_resblock(self, n_blocks, n_filters, strides=1, regularization=0.01):
     """Build Residual blocks from BottleneckResidualUnit layers.
@@ -207,6 +229,19 @@ class DirectionNet(keras.Model):
     return UpSampling2D(interpolation='bilinear')(
         geometry.equirectangular_padding(x, [[1, 1], [1, 1]]))
 
+  def _decoder_context_tokens(self, feature_map):
+    """Extract learned context tokens from decoder feature maps."""
+    resized = tf.image.resize_images(
+        feature_map,
+        [self.context_grid, self.context_grid],
+        method=tf.image.ResizeMethod.AREA)
+    projected = self.context_projection(resized)
+    shape = tf.shape(projected)
+    batch = shape[0]
+    return tf.reshape(
+        projected, [batch, self.context_grid * self.context_grid,
+                    self.transformer_dim])
+
   def call(self, img1, img2, training=False):
     """Call the forward pass of the network.
 
@@ -238,7 +273,16 @@ class DirectionNet(keras.Model):
     y = self._spherical_upsampling(y)
     y = self.decoder_block6(y)[:, 1:-1, 1:-1, :]
 
-    return self.down_channel(y)
+    distribution_logits = self.down_channel(y)
+    if not self.use_transformer:
+      return distribution_logits
+
+    distribution_pred = util.spherical_normalization(distribution_logits)
+    expectation = util.spherical_expectation(distribution_pred)
+    context_tokens = self._decoder_context_tokens(y)
+    refined_expectation = self.context_transformer(
+        expectation, context_tokens, training=training)
+    return distribution_logits, refined_expectation
 
 
 class SiameseEncoder(keras.Model):

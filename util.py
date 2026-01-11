@@ -264,8 +264,17 @@ def half_rotation(rotation):
 
 def distributions_to_directions(x):
   """Convert spherical distributions from the DirectionNet to directions."""
-  distribution_pred = spherical_normalization(x)
-  expectation = spherical_expectation(distribution_pred)
+  refined_expectation = None
+  distribution_logits = x
+  if isinstance(x, (tuple, list)):
+    if len(x) > 1:
+      refined_expectation = x[1]
+    distribution_logits = x[0]
+  distribution_pred = spherical_normalization(distribution_logits)
+  if refined_expectation is None:
+    expectation = spherical_expectation(distribution_pred)
+  else:
+    expectation = refined_expectation
   expectation_normalized = tf.nn.l2_normalize(expectation, axis=-1)
   return expectation_normalized, expectation, distribution_pred
 
