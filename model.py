@@ -20,8 +20,10 @@ from tensorflow.compat.v1 import keras
 from tensorflow.compat.v1.keras import regularizers
 from tensorflow.compat.v1.keras.layers import BatchNormalization
 from tensorflow.compat.v1.keras.layers import Conv2D
+from tensorflow.compat.v1.keras.layers import Dense
 from tensorflow.compat.v1.keras.layers import GlobalAveragePooling2D
 from tensorflow.compat.v1.keras.layers import LeakyReLU
+from tensorflow.compat.v1.keras.layers import LayerNormalization
 from tensorflow.compat.v1.keras.layers import UpSampling2D
 from tensorflow.compat.v1.keras.models import Sequential
 
@@ -139,6 +141,23 @@ class DirectionNet(keras.Model):
         self._make_resblock(2, 32, regularization=regularization),
         BatchNormalization(),
         LeakyReLU()])
+    self.decoder_block3_norm = LayerNormalization(epsilon=1e-6)
+    self.decoder_block3_q = Dense(
+        32, use_bias=False, kernel_regularizer=regularizers.l2(regularization))
+    self.decoder_block3_k = Dense(
+        32, use_bias=False, kernel_regularizer=regularizers.l2(regularization))
+    self.decoder_block3_v = Dense(
+        32, use_bias=False, kernel_regularizer=regularizers.l2(regularization))
+    self.decoder_block3_proj = Dense(
+        64, use_bias=False, kernel_regularizer=regularizers.l2(regularization))
+    self.decoder_block3_mlp = Sequential([
+        Dense(128, use_bias=False,
+              kernel_regularizer=regularizers.l2(regularization)),
+        LeakyReLU(),
+        Dense(64, use_bias=False,
+              kernel_regularizer=regularizers.l2(regularization)),
+    ])
+    self.decoder_block3_mlp_norm = LayerNormalization(epsilon=1e-6)
     self.decoder_block4 = Sequential([
         Conv2D(32,
                3,
@@ -207,6 +226,32 @@ class DirectionNet(keras.Model):
     return UpSampling2D(interpolation='bilinear')(
         geometry.equirectangular_padding(x, [[1, 1], [1, 1]]))
 
+  def _decoder_block3_attention(self, x):
+    """Apply lightweight transformer on decoder_block3 feature map."""
+    spatial_shape = tf.shape(x)
+    batch = spatial_shape[0]
+    height = spatial_shape[1]
+    width = spatial_shape[2]
+    channels = spatial_shape[3]
+    tokens = tf.reshape(x, [batch, height * width, channels])
+
+    normalized = self.decoder_block3_norm(tokens)
+    query = self.decoder_block3_q(normalized)
+    key = self.decoder_block3_k(normalized)
+    value = self.decoder_block3_v(normalized)
+
+    scale = tf.cast(tf.shape(key)[-1], tf.float32) ** -0.5
+    scores = tf.matmul(query, key, transpose_b=True) * scale
+    weights = tf.nn.softmax(scores)
+    attention = tf.matmul(weights, value)
+    attention = self.decoder_block3_proj(attention)
+    tokens = tokens + attention
+
+    mlp_input = self.decoder_block3_mlp_norm(tokens)
+    tokens = tokens + self.decoder_block3_mlp(mlp_input)
+
+    return tf.reshape(tokens, [batch, height, width, channels])
+
   def call(self, img1, img2, training=False):
     """Call the forward pass of the network.
 
@@ -228,6 +273,7 @@ class DirectionNet(keras.Model):
 
     y = self._spherical_upsampling(y)
     y = self.decoder_block3(y)[:, 1:-1, 1:-1, :]
+    y = self._decoder_block3_attention(y)
 
     y = self._spherical_upsampling(y)
     y = self.decoder_block4(y)[:, 1:-1, 1:-1, :]
