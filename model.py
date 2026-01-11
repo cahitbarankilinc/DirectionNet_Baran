@@ -24,6 +24,7 @@ from tensorflow.compat.v1.keras.layers import GlobalAveragePooling2D
 from tensorflow.compat.v1.keras.layers import LeakyReLU
 from tensorflow.compat.v1.keras.layers import UpSampling2D
 from tensorflow.compat.v1.keras.models import Sequential
+from directional_transformer import DirectionalContextTransformer
 
 
 class BottleneckResidualUnit(keras.Model):
@@ -115,6 +116,10 @@ class DirectionNet(keras.Model):
     super(DirectionNet, self).__init__()
     self.encoder = SiameseEncoder()
     self.inplanes = self.encoder.inplanes
+    self.transformer_token_dim = 32
+    self.transformer_num_tokens = 32
+    self.context_transformer = DirectionalContextTransformer(
+        token_dim=self.transformer_token_dim)
     self.decoder_block1 = Sequential([
         Conv2D(256,
                3,
@@ -218,7 +223,18 @@ class DirectionNet(keras.Model):
     Returns:
      [BATCH, 64, 64, N] N spherical distributions in 64x64 equirectangular grid.
     """
-    y = self.encoder(img1, img2, training)
+    y = self.encoder(img1, img2, training=training)
+    batch_size = tf.shape(y)[0]
+    flat_embedding = tf.reshape(
+        y, [batch_size, self.transformer_num_tokens*self.transformer_token_dim])
+    token_embedding = tf.reshape(
+        flat_embedding,
+        [batch_size, self.transformer_num_tokens, self.transformer_token_dim])
+    token_embedding = self.context_transformer(
+        token_embedding, training=training)
+    y = tf.reshape(
+        token_embedding,
+        [batch_size, 1, 1, self.transformer_num_tokens*self.transformer_token_dim])
 
     y = self._spherical_upsampling(y)
     y = self.decoder_block1(y)[:, 1:-1, 1:-1, :]
