@@ -20,6 +20,7 @@ from tensorflow.compat.v1 import keras
 from tensorflow.compat.v1.keras import regularizers
 from tensorflow.compat.v1.keras.layers import BatchNormalization
 from tensorflow.compat.v1.keras.layers import Conv2D
+from tensorflow.compat.v1.keras.layers import Dense
 from tensorflow.compat.v1.keras.layers import GlobalAveragePooling2D
 from tensorflow.compat.v1.keras.layers import LeakyReLU
 from tensorflow.compat.v1.keras.layers import UpSampling2D
@@ -163,6 +164,12 @@ class DirectionNet(keras.Model):
         self._make_resblock(2, 4, regularization=regularization),
         BatchNormalization(),
         LeakyReLU()])
+    self.transformer_q = Dense(128, use_bias=False)
+    self.transformer_k = Dense(128, use_bias=False)
+    self.transformer_v = Dense(128, use_bias=False)
+    self.transformer_proj = Dense(128, use_bias=False)
+    self.transformer_ffn1 = Dense(256, activation='relu')
+    self.transformer_ffn2 = Dense(128)
     self.down_channel = Conv2D(
         n_out, 1, kernel_regularizer=regularizers.l2(regularization))
 
@@ -207,6 +214,26 @@ class DirectionNet(keras.Model):
     return UpSampling2D(interpolation='bilinear')(
         geometry.equirectangular_padding(x, [[1, 1], [1, 1]]))
 
+  def _apply_transformer(self, x):
+    """Apply a lightweight transformer block on flattened spatial tokens."""
+    shape = tf.shape(x)
+    batch_size = shape[0]
+    height = shape[1]
+    width = shape[2]
+    channels = shape[3]
+    tokens = tf.reshape(x, [batch_size, height * width, channels])
+    queries = self.transformer_q(tokens)
+    keys = self.transformer_k(tokens)
+    values = self.transformer_v(tokens)
+    scale = tf.math.sqrt(tf.cast(tf.shape(queries)[-1], tf.float32))
+    attention = tf.nn.softmax(tf.matmul(queries, keys, transpose_b=True) / scale)
+    attended = tf.matmul(attention, values)
+    projected = self.transformer_proj(attended)
+    tokens = tokens + projected
+    ff_tokens = self.transformer_ffn2(self.transformer_ffn1(tokens))
+    tokens = tokens + ff_tokens
+    return tf.reshape(tokens, [batch_size, height, width, channels])
+
   def call(self, img1, img2, training=False):
     """Call the forward pass of the network.
 
@@ -225,6 +252,7 @@ class DirectionNet(keras.Model):
 
     y = self._spherical_upsampling(y)
     y = self.decoder_block2(y)[:, 1:-1, 1:-1, :]
+    y = self._apply_transformer(y)
 
     y = self._spherical_upsampling(y)
     y = self.decoder_block3(y)[:, 1:-1, 1:-1, :]
