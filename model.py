@@ -20,6 +20,7 @@ from tensorflow.compat.v1 import keras
 from tensorflow.compat.v1.keras import regularizers
 from tensorflow.compat.v1.keras.layers import BatchNormalization
 from tensorflow.compat.v1.keras.layers import Conv2D
+from tensorflow.compat.v1.keras.layers import Dense
 from tensorflow.compat.v1.keras.layers import GlobalAveragePooling2D
 from tensorflow.compat.v1.keras.layers import LeakyReLU
 from tensorflow.compat.v1.keras.layers import UpSampling2D
@@ -163,6 +164,24 @@ class DirectionNet(keras.Model):
         self._make_resblock(2, 4, regularization=regularization),
         BatchNormalization(),
         LeakyReLU()])
+    self.cross_attn_q = Dense(
+        256,
+        use_bias=False,
+        kernel_regularizer=regularizers.l2(regularization))
+    self.cross_attn_k = Dense(
+        256,
+        use_bias=False,
+        kernel_regularizer=regularizers.l2(regularization))
+    self.cross_attn_v = Dense(
+        256,
+        use_bias=False,
+        kernel_regularizer=regularizers.l2(regularization))
+    self.cross_attn_out = Dense(
+        256,
+        use_bias=False,
+        kernel_regularizer=regularizers.l2(regularization))
+    self.cross_attn_bn = BatchNormalization()
+    self.cross_attn_activation = LeakyReLU()
     self.down_channel = Conv2D(
         n_out, 1, kernel_regularizer=regularizers.l2(regularization))
 
@@ -207,6 +226,35 @@ class DirectionNet(keras.Model):
     return UpSampling2D(interpolation='bilinear')(
         geometry.equirectangular_padding(x, [[1, 1], [1, 1]]))
 
+  def _decoder_cross_attention(self, x, encoder_global, training=False):
+    """Apply decoder-encoder cross attention with a global encoder token.
+
+    Args:
+      x: [BATCH, HEIGHT, WIDTH, CHANNELS] decoder feature map.
+      encoder_global: [BATCH, 1, 1, CHANNELS] encoder global embedding.
+      training: (bool) if the training mode is on.
+
+    Returns:
+      [BATCH, HEIGHT, WIDTH, CHANNELS] attended feature map.
+    """
+    batch_size = tf.shape(x)[0]
+    height = tf.shape(x)[1]
+    width = tf.shape(x)[2]
+    channels = tf.shape(x)[3]
+    q = tf.reshape(x, [batch_size, -1, channels])
+    kv = tf.reshape(encoder_global, [batch_size, -1, tf.shape(encoder_global)[3]])
+    q_proj = self.cross_attn_q(q)
+    k_proj = self.cross_attn_k(kv)
+    v_proj = self.cross_attn_v(kv)
+    scale = tf.math.rsqrt(tf.cast(tf.shape(k_proj)[-1], q_proj.dtype))
+    scores = tf.matmul(q_proj, k_proj, transpose_b=True) * scale
+    weights = tf.nn.softmax(scores, axis=-1)
+    attn = tf.matmul(weights, v_proj)
+    attended = self.cross_attn_out(attn)
+    attended = tf.reshape(attended, [batch_size, height, width, -1])
+    attended = self.cross_attn_bn(attended, training=training)
+    return self.cross_attn_activation(attended)
+
   def call(self, img1, img2, training=False):
     """Call the forward pass of the network.
 
@@ -218,10 +266,12 @@ class DirectionNet(keras.Model):
     Returns:
      [BATCH, 64, 64, N] N spherical distributions in 64x64 equirectangular grid.
     """
-    y = self.encoder(img1, img2, training)
+    encoder_global = self.encoder(img1, img2, training)
+    y = encoder_global
 
     y = self._spherical_upsampling(y)
     y = self.decoder_block1(y)[:, 1:-1, 1:-1, :]
+    y = self._decoder_cross_attention(y, encoder_global, training)
 
     y = self._spherical_upsampling(y)
     y = self.decoder_block2(y)[:, 1:-1, 1:-1, :]
