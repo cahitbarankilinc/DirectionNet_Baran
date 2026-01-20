@@ -20,6 +20,7 @@ from tensorflow.compat.v1 import keras
 from tensorflow.compat.v1.keras import regularizers
 from tensorflow.compat.v1.keras.layers import BatchNormalization
 from tensorflow.compat.v1.keras.layers import Conv2D
+from tensorflow.compat.v1.keras.layers import Dense
 from tensorflow.compat.v1.keras.layers import GlobalAveragePooling2D
 from tensorflow.compat.v1.keras.layers import LeakyReLU
 from tensorflow.compat.v1.keras.layers import UpSampling2D
@@ -102,6 +103,81 @@ class BottleneckResidualUnit(keras.Model):
     return y+residual
 
 
+class AxialAttention(keras.layers.Layer):
+  """Axial attention layer that attends along a single spatial axis."""
+
+  def __init__(self, attention_axis, num_heads=4, regularization=0.01):
+    super(AxialAttention, self).__init__()
+    if attention_axis not in ('height', 'width'):
+      raise ValueError('attention_axis must be "height" or "width".')
+    self.attention_axis = attention_axis
+    self.num_heads = num_heads
+    self.regularization = regularization
+    self.qkv = None
+    self.proj = None
+    self.head_dim = None
+    self.scale = None
+
+  def build(self, input_shape):
+    channels = int(input_shape[-1])
+    if channels % self.num_heads != 0:
+      raise ValueError('channels must be divisible by num_heads.')
+    self.head_dim = channels // self.num_heads
+    self.scale = tf.sqrt(tf.cast(self.head_dim, tf.float32))
+    self.qkv = Dense(
+        3 * channels,
+        use_bias=False,
+        kernel_regularizer=regularizers.l2(self.regularization))
+    self.proj = Dense(
+        channels,
+        use_bias=False,
+        kernel_regularizer=regularizers.l2(self.regularization))
+    super(AxialAttention, self).build(input_shape)
+
+  def _split_heads(self, x):
+    batch_size = tf.shape(x)[0]
+    seq_len = tf.shape(x)[1]
+    x = tf.reshape(x, [batch_size, seq_len, self.num_heads, self.head_dim])
+    return tf.transpose(x, [0, 2, 1, 3])
+
+  def _combine_heads(self, x):
+    x = tf.transpose(x, [0, 2, 1, 3])
+    batch_size = tf.shape(x)[0]
+    seq_len = tf.shape(x)[1]
+    return tf.reshape(x, [batch_size, seq_len, self.num_heads * self.head_dim])
+
+  def _scaled_dot_attention(self, x):
+    qkv = self.qkv(x)
+    q, k, v = tf.split(qkv, 3, axis=-1)
+    q = self._split_heads(q)
+    k = self._split_heads(k)
+    v = self._split_heads(v)
+    scores = tf.matmul(q, k, transpose_b=True) / self.scale
+    weights = tf.nn.softmax(scores, axis=-1)
+    attended = tf.matmul(weights, v)
+    attended = self._combine_heads(attended)
+    return self.proj(attended)
+
+  def call(self, x, training=False):
+    if self.attention_axis == 'height':
+      x = tf.transpose(x, [0, 2, 1, 3])
+      batch_size = tf.shape(x)[0]
+      width = tf.shape(x)[1]
+      height = tf.shape(x)[2]
+      channels = tf.shape(x)[3]
+      x = tf.reshape(x, [batch_size * width, height, channels])
+      x = self._scaled_dot_attention(x)
+      x = tf.reshape(x, [batch_size, width, height, channels])
+      return tf.transpose(x, [0, 2, 1, 3])
+    batch_size = tf.shape(x)[0]
+    height = tf.shape(x)[1]
+    width = tf.shape(x)[2]
+    channels = tf.shape(x)[3]
+    x = tf.reshape(x, [batch_size * height, width, channels])
+    x = self._scaled_dot_attention(x)
+    return tf.reshape(x, [batch_size, height, width, channels])
+
+
 class DirectionNet(keras.Model):
   """DirectionNet generates spherical probability distributions from images."""
 
@@ -153,6 +229,8 @@ class DirectionNet(keras.Model):
                use_bias=False,
                kernel_regularizer=regularizers.l2(regularization)),
         self._make_resblock(2, 8, regularization=regularization),
+        AxialAttention('height', regularization=regularization),
+        AxialAttention('width', regularization=regularization),
         BatchNormalization(),
         LeakyReLU()])
     self.decoder_block6 = Sequential([
