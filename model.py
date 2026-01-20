@@ -22,8 +22,67 @@ from tensorflow.compat.v1.keras.layers import BatchNormalization
 from tensorflow.compat.v1.keras.layers import Conv2D
 from tensorflow.compat.v1.keras.layers import GlobalAveragePooling2D
 from tensorflow.compat.v1.keras.layers import LeakyReLU
+from tensorflow.compat.v1.keras.layers import MultiHeadAttention
 from tensorflow.compat.v1.keras.layers import UpSampling2D
 from tensorflow.compat.v1.keras.models import Sequential
+
+
+class WindowAttentionBlock(keras.layers.Layer):
+  """Windowed multi-head self-attention block (Swin-style local attention)."""
+
+  def __init__(self, num_heads, key_dim, window_size=4, shift_size=0, **kwargs):
+    super(WindowAttentionBlock, self).__init__(**kwargs)
+    self.num_heads = num_heads
+    self.window_size = window_size
+    self.shift_size = shift_size
+    self.attention = MultiHeadAttention(num_heads=num_heads, key_dim=key_dim)
+
+  def call(self, x, training=False):
+    input_shape = tf.shape(x)
+    batch_size = input_shape[0]
+    height = input_shape[1]
+    width = input_shape[2]
+    channels = input_shape[3]
+    window_size = self.window_size
+    shift_size = self.shift_size
+
+    pad_height = (window_size - height % window_size) % window_size
+    pad_width = (window_size - width % window_size) % window_size
+    padded = tf.pad(
+        x,
+        [[0, 0], [0, pad_height], [0, pad_width], [0, 0]],
+        constant_values=0)
+    if shift_size:
+      padded = tf.roll(padded, shift=[-shift_size, -shift_size], axis=[1, 2])
+
+    padded_shape = tf.shape(padded)
+    padded_height = padded_shape[1]
+    padded_width = padded_shape[2]
+    windows_height = padded_height // window_size
+    windows_width = padded_width // window_size
+
+    reshaped = tf.reshape(
+        padded,
+        [batch_size, windows_height, window_size, windows_width, window_size,
+         channels])
+    windows = tf.transpose(reshaped, [0, 1, 3, 2, 4, 5])
+    windows = tf.reshape(windows, [-1, window_size * window_size, channels])
+
+    attended = self.attention(windows, windows, training=training)
+    attended = tf.reshape(
+        attended,
+        [batch_size, windows_height, windows_width, window_size, window_size,
+         channels])
+    attended = tf.transpose(attended, [0, 1, 3, 2, 4, 5])
+    attended = tf.reshape(
+        attended, [batch_size, padded_height, padded_width, channels])
+
+    if shift_size:
+      attended = tf.roll(attended, shift=[shift_size, shift_size], axis=[1, 2])
+
+    if pad_height or pad_width:
+      attended = attended[:, :height, :width, :]
+    return x + attended
 
 
 class BottleneckResidualUnit(keras.Model):
@@ -145,6 +204,7 @@ class DirectionNet(keras.Model):
                use_bias=False,
                kernel_regularizer=regularizers.l2(regularization)),
         self._make_resblock(2, 16, regularization=regularization),
+        WindowAttentionBlock(num_heads=4, key_dim=8, window_size=4),
         BatchNormalization(),
         LeakyReLU()])
     self.decoder_block5 = Sequential([
