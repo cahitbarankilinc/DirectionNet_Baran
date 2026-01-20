@@ -20,8 +20,11 @@ from tensorflow.compat.v1 import keras
 from tensorflow.compat.v1.keras import regularizers
 from tensorflow.compat.v1.keras.layers import BatchNormalization
 from tensorflow.compat.v1.keras.layers import Conv2D
+from tensorflow.compat.v1.keras.layers import Dense
 from tensorflow.compat.v1.keras.layers import GlobalAveragePooling2D
 from tensorflow.compat.v1.keras.layers import LeakyReLU
+from tensorflow.compat.v1.keras.layers import LayerNormalization
+from tensorflow.compat.v1.keras.layers import MultiHeadAttention
 from tensorflow.compat.v1.keras.layers import UpSampling2D
 from tensorflow.compat.v1.keras.models import Sequential
 
@@ -137,6 +140,8 @@ class DirectionNet(keras.Model):
                use_bias=False,
                kernel_regularizer=regularizers.l2(regularization)),
         self._make_resblock(2, 32, regularization=regularization),
+        MidResolutionGlobalMHSA(
+            num_heads=4, patch_size=2, regularization=regularization),
         BatchNormalization(),
         LeakyReLU()])
     self.decoder_block4 = Sequential([
@@ -239,6 +244,56 @@ class DirectionNet(keras.Model):
     y = self.decoder_block6(y)[:, 1:-1, 1:-1, :]
 
     return self.down_channel(y)
+
+
+class MidResolutionGlobalMHSA(keras.layers.Layer):
+  """Mid-resolution global MHSA block with patchified tokens."""
+
+  def __init__(self, num_heads=4, patch_size=2, regularization=0.01):
+    super(MidResolutionGlobalMHSA, self).__init__()
+    self.num_heads = num_heads
+    self.patch_size = patch_size
+    self.regularization = regularization
+    self.norm = LayerNormalization(epsilon=1e-6)
+    self.attention = None
+    self.proj_in = None
+    self.proj_out = None
+
+  def build(self, input_shape):
+    channels = input_shape[-1]
+    if channels is None:
+      raise ValueError('Channel dimension must be defined for MHSA block.')
+    self.attention = MultiHeadAttention(
+        num_heads=self.num_heads,
+        key_dim=channels // self.num_heads,
+        kernel_regularizer=regularizers.l2(self.regularization))
+    self.proj_in = Dense(
+        channels, kernel_regularizer=regularizers.l2(self.regularization))
+    self.proj_out = Dense(
+        self.patch_size * self.patch_size * channels,
+        kernel_regularizer=regularizers.l2(self.regularization))
+    super(MidResolutionGlobalMHSA, self).build(input_shape)
+
+  def call(self, x):
+    shape = tf.shape(x)
+    batch, height, width, channels = shape[0], shape[1], shape[2], shape[3]
+    patch = self.patch_size
+    new_height = height // patch
+    new_width = width // patch
+    tokens = tf.reshape(
+        x, [batch, new_height, patch, new_width, patch, channels])
+    tokens = tf.transpose(tokens, [0, 1, 3, 2, 4, 5])
+    tokens = tf.reshape(
+        tokens, [batch, new_height * new_width, patch * patch * channels])
+    tokens = self.proj_in(tokens)
+    tokens = self.norm(tokens)
+    tokens = tokens + self.attention(tokens, tokens)
+    tokens = self.proj_out(tokens)
+    tokens = tf.reshape(
+        tokens, [batch, new_height, new_width, patch, patch, channels])
+    tokens = tf.transpose(tokens, [0, 1, 3, 2, 4, 5])
+    tokens = tf.reshape(tokens, [batch, height, width, channels])
+    return x + tokens
 
 
 class SiameseEncoder(keras.Model):
