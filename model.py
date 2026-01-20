@@ -24,6 +24,8 @@ from tensorflow.compat.v1.keras.layers import GlobalAveragePooling2D
 from tensorflow.compat.v1.keras.layers import LeakyReLU
 from tensorflow.compat.v1.keras.layers import UpSampling2D
 from tensorflow.compat.v1.keras.models import Sequential
+from tensorflow.keras.layers import Dense
+from tensorflow.keras.layers import MultiHeadAttention
 
 
 class BottleneckResidualUnit(keras.Model):
@@ -102,6 +104,77 @@ class BottleneckResidualUnit(keras.Model):
     return y+residual
 
 
+class MobileViTBlock(keras.Model):
+  """MobileViT-style block mixing local convolutions with transformer attention."""
+
+  def __init__(self,
+               conv_filters,
+               resblock,
+               local_filters,
+               patch_size=2,
+               num_heads=4,
+               regularization=0.01):
+    super(MobileViTBlock, self).__init__()
+    self.patch_size = patch_size
+    self.conv = Conv2D(
+        conv_filters,
+        3,
+        use_bias=False,
+        padding='same',
+        kernel_regularizer=regularizers.l2(regularization))
+    self.resblock = resblock
+    self.local_conv = Conv2D(
+        local_filters,
+        3,
+        padding='same',
+        use_bias=False,
+        kernel_regularizer=regularizers.l2(regularization))
+    self.token_proj = Dense(local_filters)
+    self.mha = MultiHeadAttention(
+        num_heads=num_heads,
+        key_dim=local_filters // num_heads)
+    self.token_proj_back = Dense(local_filters)
+    self.bn = BatchNormalization()
+    self.leaky_relu = LeakyReLU()
+
+  def call(self, x, training=False):
+    x = self.conv(x)
+    x = self.resblock(x, training=training)
+    x = self.local_conv(x)
+
+    batch = tf.shape(x)[0]
+    height = tf.shape(x)[1]
+    width = tf.shape(x)[2]
+    channels = tf.shape(x)[3]
+    patch_dim = self.patch_size * self.patch_size * channels
+
+    patches = tf.image.extract_patches(
+        images=x,
+        sizes=[1, self.patch_size, self.patch_size, 1],
+        strides=[1, self.patch_size, self.patch_size, 1],
+        rates=[1, 1, 1, 1],
+        padding='VALID')
+    tokens = tf.reshape(patches, [batch, -1, patch_dim])
+    tokens = self.token_proj(tokens)
+    tokens = self.mha(tokens, tokens, training=training)
+    tokens = self.token_proj_back(tokens)
+
+    patches = tf.reshape(
+        tokens,
+        [batch,
+         height // self.patch_size,
+         width // self.patch_size,
+         self.patch_size,
+         self.patch_size,
+         channels])
+    patches = tf.transpose(patches, [0, 1, 3, 2, 4, 5])
+    x = tf.reshape(patches, [batch, height, width, channels])
+
+    x = self.bn(x, training=training)
+    x = self.leaky_relu(x)
+    return x
+
+
 class DirectionNet(keras.Model):
   """DirectionNet generates spherical probability distributions from images."""
 
@@ -124,13 +197,13 @@ class DirectionNet(keras.Model):
         BatchNormalization(),
         LeakyReLU()])
     self.decoder_block2 = Sequential([
-        Conv2D(128,
-               3,
-               use_bias=False,
-               kernel_regularizer=regularizers.l2(regularization)),
-        self._make_resblock(2, 64, regularization=regularization),
-        BatchNormalization(),
-        LeakyReLU()])
+        MobileViTBlock(
+            conv_filters=128,
+            resblock=self._make_resblock(2, 64, regularization=regularization),
+            local_filters=128,
+            patch_size=2,
+            num_heads=4,
+            regularization=regularization)])
     self.decoder_block3 = Sequential([
         Conv2D(64,
                3,
